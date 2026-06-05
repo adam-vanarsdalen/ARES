@@ -8,6 +8,10 @@ import os
 from datetime import datetime, timezone
 
 from utils.exporters import build_cyclonedx_report, build_sarif_report
+from exporters.stix_exporter import build_stix_bundle
+from exporters.oscal_exporter import build_oscal_assessment_results
+from exporters.openvex_exporter import build_openvex
+from exporters.csaf_exporter import build_csaf_advisory
 
 
 def generate_report(
@@ -507,5 +511,15 @@ def generate_report(
     cdx_filename = filename.replace(".md", ".cdx.json")
     with open(cdx_filename, "w") as f:
         json.dump(build_cyclonedx_report(target, osint_clean, vuln_clean), f, indent=2)
+
+    structured_exports = {
+        "stix": build_stix_bundle(target, osint_clean, vuln_clean, redteam_clean, run_manifest),
+        "oscal": build_oscal_assessment_results(target, osint_clean, vuln_clean, redteam_clean, run_manifest),
+        "openvex": build_openvex(target, osint_clean, vuln_clean, redteam_clean, run_manifest),
+        "csaf": build_csaf_advisory(target, osint_clean, vuln_clean, redteam_clean, run_manifest),
+    }
+    for export_name, payload in structured_exports.items():
+        with open(filename.replace(".md", f".{export_name}.json"), "w") as f:
+            json.dump(payload, f, indent=2)
 
     return filename

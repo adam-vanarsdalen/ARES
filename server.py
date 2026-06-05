@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, SecretStr
 from sse_starlette.sse import EventSourceResponse
 
@@ -50,6 +50,10 @@ from utils.config import (
 )
 from tools.secret_workbench import verify_operator_secret
 from utils.finding_lifecycle import find_finding, initialize_findings, review_finding
+from exporters.stix_exporter import build_stix_bundle
+from exporters.oscal_exporter import build_oscal_assessment_results
+from exporters.openvex_exporter import build_openvex
+from exporters.csaf_exporter import build_csaf_advisory
 from utils.session_store import (
     create_session,
     get_session,
@@ -462,10 +466,39 @@ async def get_status(session_id: str):
 
 
 @app.get("/assess/{session_id}/report")
-async def get_report(session_id: str):
+async def get_report(session_id: str, format: str = ""):
     session = get_session(session_id)
     if session is None:
         raise HTTPException(404, "Session not found")
+    if format:
+        builders = {
+            "stix": build_stix_bundle,
+            "oscal": build_oscal_assessment_results,
+            "openvex": build_openvex,
+            "csaf": build_csaf_advisory,
+        }
+        builder = builders.get(format.lower())
+        if builder is None:
+            raise HTTPException(400, "Unsupported report format")
+        results = session.get("results") or {}
+        if not results:
+            raise HTTPException(404, "Assessment results not yet available")
+        osint_report = results.get("osint", {})
+        vuln_report = results.get("recon", {})
+        redteam_report = results.get("redteam", {})
+        manifest = (
+            osint_report.get("run_manifest")
+            or vuln_report.get("run_manifest")
+            or redteam_report.get("run_manifest")
+            or {}
+        )
+        return JSONResponse(builder(
+            session["target"],
+            osint_report,
+            vuln_report,
+            redteam_report,
+            manifest,
+        ))
     report_path = session.get("report_path")
     if not report_path or not os.path.exists(report_path):
         raise HTTPException(404, "Report not yet generated")
