@@ -243,8 +243,11 @@ def evaluate_capability_action(action, profile, roe: RoEPolicy | dict | None, sc
             return _decision(False, "Risky method checks are disabled by configuration.", resolved, "risky_feature_flag", safety_flags=flags)
         if roe is None or method not in roe.risky_methods_allowed:
             return _decision(False, f"Method {method} is not explicitly allowed by the RoE.", resolved, "roe_risky_method_allowlist", safety_flags=flags)
-        if roe.explicitly_allowed_risky_paths and path not in roe.explicitly_allowed_risky_paths:
+        if not roe.explicitly_allowed_risky_paths or path not in roe.explicitly_allowed_risky_paths:
             return _decision(False, f"Path {path} is not explicitly allowed for risky methods.", resolved, "roe_risky_path_allowlist", safety_flags=flags)
+        leaf = path.rstrip("/").rsplit("/", 1)[-1]
+        if leaf and ("." in leaf or leaf.startswith(".")):
+            return _decision(False, f"Path {path} could create or overwrite a file.", resolved, "risky_file_creation_path", safety_flags=flags)
         flags.extend(["zero-body-required", "roe-risky-method-authorized"])
         return _decision(True, "Risky method is explicitly authorized by profile and RoE.", resolved, "roe_risky_method_allowlist", True, flags)
 

@@ -57,12 +57,14 @@ from tools.passive_url_discovery import passive_url_discovery
 from tools.js_intelligence import js_intelligence
 from tools.tls_audit import tls_audit
 from tools.redteam_verification import (
+    VerificationStatus,
     discover_auth_panels,
     enumerate_api_endpoints,
     test_clickjacking,
     test_host_header_injection,
     test_http_methods,
     test_open_redirect,
+    verification_result,
 )
 from tools.epss_scoring import enrich_cves_with_epss, epss_summary
 from tools.attack_graph import build_attack_graph, generate_kill_chains, map_to_mitre
@@ -1201,6 +1203,7 @@ def _ground_redteam_report(target, vulns, test_results, kill_chain_data, report)
         "confirmed_vulnerabilities": unique_confirmed,
         "kill_chains": kill_chains,
         "proof_of_concepts": unique_pocs,
+        "verification_results": test_results,
         "overall_risk": overall_risk,
         "engagement_summary": (
             f"Grounded red team summary for {target}: "
@@ -1212,6 +1215,13 @@ def _ground_redteam_report(target, vulns, test_results, kill_chain_data, report)
         "validation_summary": {
             "tests_executed": len(test_results),
             "confirmed_count": len(unique_confirmed),
+            "status_counts": {
+                status.value: sum(
+                    1 for item in test_results
+                    if item.get("result", {}).get("status") == status.value
+                )
+                for status in VerificationStatus
+            },
             "coverage_gaps": coverage_gaps,
         },
     }
@@ -2220,6 +2230,7 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
         await asyncio.sleep(0.1)
 
         test_results = []
+        advanced_profile = self.profile in {CapabilityProfile.ADVANCED, CapabilityProfile.CUSTOM}
         verification_assets = sorted(
             [
                 asset for asset in (vuln_data.get("asset_inventory") or osint_data.get("_asset_inventory", []) or [])
@@ -2232,14 +2243,58 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
         if not valid_verification_url:
             verification_url = f"https://{target}"
         findings_to_test = list(vuln_data.get("critical_findings", [])) + list(vuln_data.get("high_findings", []))
-        for finding in vuln_data.get("medium_findings", []):
-            title = finding.get("title", "").lower()
-            if any(marker in title for marker in ["missing security headers", "cors", "exposed path", "clickjacking", "open redirect", "http method", "tls"]):
-                findings_to_test.append(finding)
-        findings_to_test = findings_to_test[:REDTEAM_MAX_VERIFICATIONS]
+        if advanced_profile:
+            findings_to_test.extend(vuln_data.get("medium_findings", []))
+        else:
+            for finding in vuln_data.get("medium_findings", []):
+                title = finding.get("title", "").lower()
+                if any(marker in title for marker in ["missing security headers", "cors", "exposed path", "clickjacking", "open redirect", "http method", "tls"]):
+                    findings_to_test.append(finding)
+            findings_to_test = findings_to_test[:REDTEAM_MAX_VERIFICATIONS]
+
+        def blocked_result(action: str, finding_name: str, decision: dict) -> dict:
+            result = verification_result(
+                VerificationStatus.BLOCKED_BY_ROE,
+                "Update the signed Rules of Engagement only if the operator and asset owner approve this verification action.",
+                action=action,
+                reason=decision.get("reason", ""),
+                matched_rule=decision.get("matched_rule", ""),
+                confirmed=False,
+            )
+            item = {"test": action, "finding": finding_name, "result": result, "authorization": decision}
+            self.emit("tool_result", {"tool": action, "data": result})
+            return item
+
+        def authorize_verification(action: str, finding_name: str, method: str = "GET", url: str = "") -> dict | None:
+            decision = self.authorize_action(
+                action,
+                target=url or verification_url,
+                method=method,
+                path=urllib.parse.urlparse(url or verification_url).path or "/",
+            )
+            if decision["allowed"]:
+                return decision
+            test_results.append(blocked_result(action, finding_name, decision))
+            return None
+
+        if advanced_profile:
+            phase_decision = self.authorize_action(
+                "advanced_verification",
+                target=verification_url,
+                method="GET",
+                path=urllib.parse.urlparse(verification_url).path or "/",
+            )
+            if not phase_decision["allowed"]:
+                for finding in findings_to_test:
+                    test_results.append(blocked_result(
+                        "advanced_verification",
+                        finding.get("title", "Unknown"),
+                        phase_decision,
+                    ))
+                findings_to_test = []
 
         for finding in findings_to_test:
-            if len(test_results) >= REDTEAM_MAX_VERIFICATIONS:
+            if not advanced_profile and len(test_results) >= REDTEAM_MAX_VERIFICATIONS:
                 break
             if self.aborted(): break
             name = finding.get("title", "Unknown")
@@ -2247,42 +2302,78 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
             await asyncio.sleep(0.8)
             try:
                 if "exposed path" in name.lower():
+                    if advanced_profile and not authorize_verification("auth_panel_discovery", name):
+                        continue
                     result = await asyncio.to_thread(
                         _test_exposed_path, verification_url, finding, self.validator
                     )
                     test_results.append({"test": "exposed_path", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "exposed_path_test", "data": result})
                 elif any(kw in name.lower() for kw in ["cred", "auth", "admin", "login"]):
+                    if advanced_profile and not authorize_verification("auth_panel_discovery", name):
+                        continue
                     result = await asyncio.to_thread(
                         discover_auth_panels, verification_url, self.validator
                     )
                     test_results.append({"test": "auth_panel_discovery", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "auth_panel_discovery", "data": result})
                 elif "cors" in name.lower():
+                    if advanced_profile and not authorize_verification("cors_verification", name):
+                        continue
                     result = await asyncio.to_thread(
                         _test_cors, verification_url, self.validator
                     )
                     test_results.append({"test": "cors", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "cors_test", "data": result})
                 elif "missing security headers" in name.lower():
+                    if advanced_profile and not authorize_verification("clickjacking_verification", name):
+                        continue
                     result = await asyncio.to_thread(
                         _test_missing_security_headers, verification_url, finding, self.validator
                     )
                     test_results.append({"test": "missing_security_headers", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "missing_header_test", "data": result})
                 elif "open redirect" in name.lower() or "redirect" in name.lower():
+                    if advanced_profile and not authorize_verification("open_redirect_verification", name):
+                        continue
                     result = await asyncio.to_thread(test_open_redirect, verification_url, self.validator)
                     test_results.append({"test": "open_redirect", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "open_redirect", "data": result})
                 elif "method" in name.lower() or "trace" in name.lower():
-                    result = await asyncio.to_thread(test_http_methods, verification_url, self.validator)
+                    if advanced_profile and not authorize_verification("http_method_verification", name, method="OPTIONS"):
+                        continue
+                    risky_methods = []
+                    if advanced_profile and self.roe:
+                        for method in self.roe.risky_methods_allowed:
+                            if method not in {"PUT", "DELETE"}:
+                                continue
+                            decision = self.authorize_action(
+                                "risky_method_check",
+                                target=verification_url,
+                                method=method,
+                                path=urllib.parse.urlparse(verification_url).path or "/",
+                            )
+                            if decision["allowed"]:
+                                risky_methods.append(method)
+                            else:
+                                test_results.append(blocked_result("risky_method_check", name, decision))
+                    result = await asyncio.to_thread(
+                        test_http_methods,
+                        verification_url,
+                        self.validator,
+                        risky_methods,
+                    )
                     test_results.append({"test": "http_methods", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "http_methods", "data": result})
                 elif "clickjack" in name.lower() or "frame" in name.lower():
+                    if advanced_profile and not authorize_verification("clickjacking_verification", name):
+                        continue
                     result = await asyncio.to_thread(test_clickjacking, verification_url, self.validator)
                     test_results.append({"test": "clickjacking", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "clickjacking", "data": result})
                 elif "host header" in name.lower():
+                    if advanced_profile and not authorize_verification("host_header_verification", name):
+                        continue
                     result = await asyncio.to_thread(test_host_header_injection, verification_url, self.validator)
                     test_results.append({"test": "host_header_injection", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "host_header_injection", "data": result})
@@ -2290,15 +2381,34 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
                     self.log("REDTEAM", f"  -> Passive check: {name[:50]}", "")
                     await asyncio.sleep(0.5)
                     test_results.append({
-                        "test": name, "finding": name, "result": {"status": "checked", "manual_verification_needed": True}
+                        "test": "manual_followup",
+                        "finding": name,
+                        "result": verification_result(
+                            VerificationStatus.NEEDS_MANUAL_FOLLOWUP,
+                            "Select a finding-specific, non-destructive manual validation procedure and record evidence before making an exploitation claim.",
+                            confirmed=False,
+                            manual_verification_needed=True,
+                        ),
                     })
             except Exception as e:
                 self.log("WARN", f"  -> Test error: {e}", "orange")
+                test_results.append({
+                    "test": "verification_error",
+                    "finding": name,
+                    "result": verification_result(
+                        VerificationStatus.NEEDS_MANUAL_FOLLOWUP,
+                        "Repeat the verification manually with an intercepting proxy and preserve the request and response evidence.",
+                        error=str(e),
+                        confirmed=False,
+                    ),
+                })
 
         for item in vuln_data.get("_additional_targets", {}).get("targets", []):
-            if len(test_results) >= REDTEAM_MAX_VERIFICATIONS:
+            if not advanced_profile and len(test_results) >= REDTEAM_MAX_VERIFICATIONS:
                 break
             if item.get("priority", 99) <= 3:
+                if advanced_profile and not authorize_verification("api_endpoint_discovery", item.get("reason", "additional target"), url=item["url"]):
+                    continue
                 result = await asyncio.to_thread(enumerate_api_endpoints, item["url"], self.validator)
                 test_results.append({"test": "api_endpoint_discovery", "finding": item.get("reason", "additional target"), "result": result})
                 self.emit("tool_result", {"tool": "api_endpoint_discovery", "data": result})
@@ -2335,6 +2445,8 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
 
         self.log("REDTEAM", "Synthesizing red team report...", "")
         redteam_report = await self._ai_redteam_synthesis(target, vuln_data, test_results, kill_chain_data)
+        redteam_report["profile"] = self.profile.value
+        redteam_report["profile_badge"] = self.profile.value.upper()
         self.log("SUCCESS", f"Red team complete — risk: {redteam_report.get('overall_risk')}, "
                  f"{len(redteam_report.get('kill_chains', []))} kill chains", "green")
         return redteam_report
@@ -2342,6 +2454,8 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
     async def _ai_redteam_synthesis(self, target, vulns, test_results, kill_chain_data) -> dict:
         cve_matches = vulns.get("cve_matches", [])
         all_findings = vulns.get("critical_findings", []) + vulns.get("high_findings", [])
+        if self.profile in {CapabilityProfile.ADVANCED, CapabilityProfile.CUSTOM}:
+            all_findings += vulns.get("medium_findings", [])
         max_cvss = max((c.get("cvss_score") or 0 for c in cve_matches), default=0)
         max_epss = max((c.get("epss", 0) for c in cve_matches), default=0)
         has_eol = any("5.6" in str(t) or "end-of-life" in str(t).lower()
@@ -2372,7 +2486,10 @@ CVEs (with EPSS):
 TEST RESULTS: {json.dumps(test_results, indent=2)}
 
 Rules:
-- For each CONFIRMED or evidence-backed vulnerability from the recon phase, attempt verification using at least one relevant non-destructive tool before writing the final redteam report. Do not attempt credentials, destructive writes, exploitation, or out-of-scope requests.
+- For advanced/custom profiles, account for every high/medium evidence-backed finding with a relevant non-destructive verification result or an explicit blocked_by_roe/needs_manual_followup status.
+- Never claim exploitation. Distinguish confirmed from strongly_indicated and not_reproduced.
+- Preserve the next_best_manual_test for each verification result.
+- Do not attempt credentials, destructive writes, exploitation, or out-of-scope requests.
 - overall_risk must be >= {risk_floor}
 - Reference EPSS scores and kill chains in summary
 - Only recommend actions directly supported by provided evidence; never invent unseen products or version numbers
@@ -2452,9 +2569,31 @@ def _test_cors(url: str, scope: ScopeValidator) -> dict:
         })
         with urllib.request.urlopen(req, context=ctx, timeout=8) as resp:
             acao = resp.headers.get("Access-Control-Allow-Origin", "")
-            return {"acao": acao, "misconfigured": acao in ["*", "https://evil.example.com"]}
+            credentials = str(resp.headers.get("Access-Control-Allow-Credentials", "")).lower() == "true"
+            reflected_origin = acao == "https://evil.example.com"
+            misconfigured = acao == "*" or reflected_origin
+            status = (
+                VerificationStatus.CONFIRMED
+                if reflected_origin and credentials
+                else VerificationStatus.STRONGLY_INDICATED
+                if misconfigured
+                else VerificationStatus.NOT_REPRODUCED
+            )
+            return verification_result(
+                status,
+                "Repeat from a researcher-controlled origin in a browser and confirm whether authenticated response data is readable.",
+                acao=acao,
+                allow_credentials=credentials,
+                origin_reflected=reflected_origin,
+                misconfigured=misconfigured,
+            )
     except Exception as e:
-        return {"error": str(e)}
+        return verification_result(
+            VerificationStatus.NEEDS_MANUAL_FOLLOWUP,
+            "Repeat the CORS request manually and preserve both preflight and response headers.",
+            error=str(e),
+            misconfigured=False,
+        )
 
 
 def _request_headers(url: str, scope: ScopeValidator, method: str = "HEAD", extra_headers: dict | None = None) -> dict:
@@ -2487,7 +2626,12 @@ def _test_exposed_path(base_url: str, finding: dict, scope: ScopeValidator) -> d
         m = re.search(r"exposed path\s+(.+)$", finding.get("title", ""), re.IGNORECASE)
         raw_path = m.group(1).strip() if m else ""
     if not raw_path:
-        return {"error": "no path to verify", "confirmed": False}
+        return verification_result(
+            VerificationStatus.SKIPPED,
+            "Identify the exact in-scope path from recon evidence before attempting protected endpoint confirmation.",
+            error="no path to verify",
+            confirmed=False,
+        )
 
     if raw_path.startswith("http://") or raw_path.startswith("https://"):
         full_url = raw_path
@@ -2502,14 +2646,16 @@ def _test_exposed_path(base_url: str, finding: dict, scope: ScopeValidator) -> d
 
     status = result.get("status_code", 0) or 0
     confirmed = status in {200, 401, 403}
-    return {
-        "path": path,
-        "url": full_url,
-        "status_code": status,
-        "confirmed": confirmed,
-        "manual_verification_needed": not confirmed,
-        "error": result.get("error", ""),
-    }
+    return verification_result(
+        VerificationStatus.CONFIRMED if confirmed else VerificationStatus.NOT_REPRODUCED,
+        "Review the endpoint manually while unauthenticated and with an authorized test account; do not attempt credentials.",
+        path=path,
+        url=full_url,
+        status_code=status,
+        confirmed=confirmed,
+        manual_verification_needed=not confirmed,
+        error=result.get("error", ""),
+    )
 
 
 def _test_missing_security_headers(base_url: str, finding: dict, scope: ScopeValidator) -> dict:
@@ -2533,10 +2679,12 @@ def _test_missing_security_headers(base_url: str, finding: dict, scope: ScopeVal
 
     headers = result.get("headers", {})
     missing = [header for header in expected if not headers.get(header)]
-    return {
-        "url": base_url,
-        "status_code": result.get("status_code", 0) or 0,
-        "missing_headers_confirmed": missing,
-        "confirmed": bool(missing),
-        "error": result.get("error", ""),
-    }
+    return verification_result(
+        VerificationStatus.CONFIRMED if missing else VerificationStatus.NOT_REPRODUCED,
+        "Confirm header behavior across authenticated pages, error responses, and state-changing routes.",
+        url=base_url,
+        status_code=result.get("status_code", 0) or 0,
+        missing_headers_confirmed=missing,
+        confirmed=bool(missing),
+        error=result.get("error", ""),
+    )

@@ -54,10 +54,11 @@
     .input-field:focus { border-color: var(--green); box-shadow: 0 0 0 1px var(--green2), inset 0 0 8px #00ff8811; }
     .input-field::placeholder { color: var(--text-dim); }
     textarea.input-field { resize: vertical; min-height: 70px; }
-    .mode-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 12px 16px 8px; }
     .mode-btn { background: var(--panel); border: 1px solid var(--border2); color: var(--text-dim); font-family: var(--mono); font-size: 9px; letter-spacing: 1px; padding: 8px 4px; cursor: pointer; text-align: center; transition: all .2s; text-transform: uppercase; }
     .mode-btn:hover { border-color: var(--green2); color: var(--green2); }
     .mode-btn.active { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+    .mode-help { padding: 0 16px 12px; border-bottom: 1px solid var(--border); color: var(--text-dim); font-family: var(--mono); font-size: 10px; line-height: 1.5; }
     .launch-btn { margin: 16px; background: transparent; border: 1.5px solid var(--green); color: var(--green); font-family: var(--sans); font-weight: 700; font-size: 14px; letter-spacing: 4px; padding: 12px; cursor: pointer; text-transform: uppercase; transition: all .2s; position: relative; overflow: hidden; clip-path: polygon(8px 0%, 100% 0%, calc(100% - 8px) 100%, 0% 100%); }
     .launch-btn::before { content: ''; position: absolute; inset: 0; background: var(--green); transform: translateX(-101%); transition: transform .3s; }
     .launch-btn:hover::before { transform: translateX(0); }
@@ -169,6 +170,20 @@ const API_CANDIDATES = (() => {
 })();
 
 const nowTime = () => new Date().toTimeString().slice(0, 8);
+const MODE_OPTIONS = [
+  ["full", "FULL", "All capped phases with non-destructive redteam verification."],
+  ["osint_only", "OSINT", "OSINT collection only; no nmap or redteam."],
+  ["passive_only", "PASSIVE", "DNS, WHOIS, CT, InternetDB, and manual dorks only."],
+  ["light_active", "LIGHT", "OSINT plus light HTTP/version/TLS checks; no nmap or redteam."],
+  ["recon_only", "RECON", "Target-level recon without OSINT expansion or redteam."],
+];
+const PROFILE_OPTIONS = [
+  ["passive", "PASSIVE"],
+  ["recon", "RECON"],
+  ["advanced", "ADVANCED"],
+  ["lab", "LAB"],
+  ["custom", "CUSTOM"],
+];
 
 function LogLine({ entry }) {
   return (
@@ -215,6 +230,8 @@ function App() {
   const [domains, setDomains] = useState("");
   const [ipRanges, setIpRanges] = useState("");
   const [mode, setMode] = useState("full");
+  const [profile, setProfile] = useState("recon");
+  const [roePolicyPath, setRoePolicyPath] = useState("");
   const [tab, setTab] = useState("terminal");
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(false);
@@ -301,7 +318,14 @@ function App() {
       const res = await fetch(`${apiBaseRef.current}/assess`, {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ target: cleanTarget, domains: scopeDomains, ip_ranges: scopeIpRanges, mode })
+        body: JSON.stringify({
+          target: cleanTarget,
+          domains: scopeDomains,
+          ip_ranges: scopeIpRanges,
+          mode,
+          profile,
+          roe_policy_path: roePolicyPath.trim() || null,
+        })
       });
 
       if (!res.ok) {
@@ -320,6 +344,25 @@ function App() {
     } catch (err) {
       addLog("WARN", `Connection failed: ${err.message}`, "red");
       setRunning(false);
+    }
+  };
+
+  const downloadReport = async () => {
+    if (!sessionId) return;
+    try {
+      const res = await fetch(`${apiBaseRef.current}/assess/${sessionId}/report`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `ARES_Report_${sessionTarget || target || sessionId}.md`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      addLog("WARN", `Report download failed: ${err.message}`, "red");
     }
   };
 
@@ -439,7 +482,7 @@ function App() {
           <div className="logo-icon">⬡</div>
           <div>
             <div className="logo-text">ARES</div>
-            <div className="logo-sub">AUTONOMOUS RECON & EXPLOITATION SYSTEM</div>
+            <div className="logo-sub">AUTHORIZED RECON & EVIDENCE SYSTEM</div>
           </div>
         </div>
         <div className="header-status">
@@ -494,12 +537,28 @@ function App() {
 
           <div className="section-label">Mode</div>
           <div className="mode-grid">
-            {["full", "osint_only", "recon_only"].map(m => (
+            {MODE_OPTIONS.map(([m, label]) => (
               <button key={m} className={`mode-btn ${mode === m ? "active" : ""}`} onClick={() => setMode(m)} disabled={running}>
-                {m === "full" ? "FULL" : m === "osint_only" ? "OSINT" : "RECON"}
+                {label}
               </button>
             ))}
           </div>
+          <div className="mode-help">{MODE_OPTIONS.find(([m]) => m === mode)?.[2]}</div>
+
+          <div className="section-label">Capability Profile</div>
+          <div className="mode-grid">
+            {PROFILE_OPTIONS.map(([value, label]) => (
+              <button key={value} className={`mode-btn ${profile === value ? "active" : ""}`} onClick={() => setProfile(value)} disabled={running}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {(profile === "advanced" || profile === "custom" || profile === "lab") && (
+            <div className="input-group" style={{ marginTop: 10 }}>
+              <label className="input-label">ROE POLICY PATH</label>
+              <input className="input-field" placeholder="policies/roe.example.yaml" value={roePolicyPath} onChange={e => setRoePolicyPath(e.target.value)} disabled={running} />
+            </div>
+          )}
 
           <button className="launch-btn" onClick={handleLaunch} disabled={running || !target.trim() || serverStatus !== "connected"}>
             <span>{running ? "RUNNING..." : "LAUNCH ARES"}</span>
@@ -535,9 +594,9 @@ function App() {
           )}
 
           {sessionId && done && (
-            <a className="download-btn" href={`${apiBase}/assess/${sessionId}/report`} download>
+            <button className="download-btn" onClick={downloadReport}>
               ↓ DOWNLOAD REPORT
-            </a>
+            </button>
           )}
         </aside>
 
@@ -605,6 +664,23 @@ function App() {
                       ))}
                     </>
                   )}
+                  {(results.redteam?.verification_results || []).length > 0 && (
+                    <>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", margin: "20px 0 12px", letterSpacing: 2 }}>
+                        VERIFICATION LEDGER
+                        <span className="phase-badge badge-active" style={{ marginLeft: 10 }}>{results.redteam.profile_badge || profile.toUpperCase()}</span>
+                      </div>
+                      {results.redteam.verification_results.map((item, i) => (
+                        <div key={i} style={{ padding: "9px 12px", border: "1px solid var(--border2)", marginBottom: 7 }}>
+                          <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: item.result?.status === "blocked_by_roe" ? "var(--orange)" : "var(--green)" }}>
+                            {(item.result?.status || "needs_manual_followup").toUpperCase()} · {item.finding || item.test}
+                          </div>
+                          {item.result?.reason && <div className="finding-desc">{item.result.reason}</div>}
+                          {item.result?.next_best_manual_test && <div className="finding-desc">Next: {item.result.next_best_manual_test}</div>}
+                        </div>
+                      ))}
+                    </>
+                  )}
                   {(results.recon?.cve_matches || []).length > 0 && (
                     <>
                       <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", margin: "20px 0 12px", letterSpacing: 2 }}>CVE MATCHES</div>
@@ -649,7 +725,7 @@ function App() {
                     </div>
                   ))}
                   <div style={{ height: 16 }} />
-                  {sessionId && <a className="download-btn" href={`${apiBase}/assess/${sessionId}/report`} download style={{ textDecoration: "none" }}>↓ DOWNLOAD FULL MARKDOWN REPORT</a>}
+                  {sessionId && <button className="download-btn" onClick={downloadReport}>↓ DOWNLOAD FULL MARKDOWN REPORT</button>}
                 </div>
               )}
             </div>
