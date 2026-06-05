@@ -1,8 +1,13 @@
 labs:
   docker_services:
     - ares-demo-lab
-    - juice-shop
-    - demo-api
+    - weak-cors-app
+    - open-redirect-app
+    - clickjacking-demo
+    - exposed-actuator-demo
+    - js-secret-demo
+    - api-docs-demo
+    - host-header-demo
   cidrs:
     - 127.0.0.0/8
     - ::1/128
@@ -12,3 +17,12 @@ labs:
     - weak_cors_data_read_chain
     - open_redirect_phishing_chain
     - api_docs_to_endpoint_chain
+  targets:
+    - {name: ares-demo-lab, url: "http://127.0.0.1:8080", lab_safe: true}
+    - {name: weak-cors-app, url: "http://127.0.0.1:18101", lab_safe: true}
+    - {name: open-redirect-app, url: "http://127.0.0.1:18102", lab_safe: true}
+    - {name: clickjacking-demo, url: "http://127.0.0.1:18103", lab_safe: true}
+    - {name: exposed-actuator-demo, url: "http://127.0.0.1:18104", lab_safe: true}
+    - {name: js-secret-demo, url: "http://127.0.0.1:18105", lab_safe: true}
+    - {name: api-docs-demo, url: "http://127.0.0.1:18106", lab_safe: true}
+    - {name: host-header-demo, url: "http://127.0.0.1:18107", lab_safe: true}

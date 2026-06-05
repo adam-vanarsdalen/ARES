@@ -1,0 +1,57 @@
+services:
+  ares-demo-lab:
+    build:
+      context: targets
+    environment:
+      LAB_SCENARIO: all
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks: [ares-lab]
+
+  weak-cors-app:
+    build: {context: targets}
+    environment: {LAB_SCENARIO: weak-cors}
+    ports: ["127.0.0.1:18101:8080"]
+    networks: [ares-lab]
+
+  open-redirect-app:
+    build: {context: targets}
+    environment: {LAB_SCENARIO: open-redirect}
+    ports: ["127.0.0.1:18102:8080"]
+    networks: [ares-lab]
+
+  clickjacking-demo:
+    build: {context: targets}
+    environment: {LAB_SCENARIO: clickjacking}
+    ports: ["127.0.0.1:18103:8080"]
+    networks: [ares-lab]
+
+  exposed-actuator-demo:
+    build: {context: targets}
+    environment: {LAB_SCENARIO: exposed-actuator}
+    ports: ["127.0.0.1:18104:8080"]
+    networks: [ares-lab]
+
+  js-secret-demo:
+    build: {context: targets}
+    environment: {LAB_SCENARIO: js-secret}
+    ports: ["127.0.0.1:18105:8080"]
+    networks: [ares-lab]
+
+  api-docs-demo:
+    build: {context: targets}
+    environment: {LAB_SCENARIO: api-docs}
+    ports: ["127.0.0.1:18106:8080"]
+    networks: [ares-lab]
+
+  host-header-demo:
+    build: {context: targets}
+    environment: {LAB_SCENARIO: host-header}
+    ports: ["127.0.0.1:18107:8080"]
+    networks: [ares-lab]
+
+networks:
+  ares-lab:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

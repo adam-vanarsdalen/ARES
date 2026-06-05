@@ -1,0 +1,13 @@
+{
+  "target": "127.0.0.1",
+  "deterministic": true,
+  "findings": [
+    {"id": "weak-cors", "title": "CORS misconfiguration", "path": "/cors-data", "minimum_status": "strong_indicator"},
+    {"id": "open-redirect", "title": "Open redirect", "path": "/redirect?url=https://example.invalid/ares-lab", "minimum_status": "confirmed"},
+    {"id": "clickjacking", "title": "Clickjacking exposure", "path": "/frame-target", "minimum_status": "confirmed"},
+    {"id": "actuator", "title": "Exposed actuator", "path": "/actuator/env", "minimum_status": "confirmed"},
+    {"id": "js-secret", "title": "Lab-only JavaScript marker", "path": "/app.js", "minimum_status": "informational"},
+    {"id": "api-docs", "title": "Exposed API docs", "path": "/openapi.json", "minimum_status": "confirmed"},
+    {"id": "host-header", "title": "Host header reflection", "path": "/host", "minimum_status": "strong_indicator"}
+  ]
+}

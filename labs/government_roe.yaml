@@ -1,0 +1,11 @@
+engagement:
+  name: ARES Government Governance Demo
+  allowed_ips: [127.0.0.1]
+  allowed_cidrs: [127.0.0.0/8]
+  forbidden_paths: [/forbidden]
+  allowed_methods: [GET, HEAD, OPTIONS, TRACE]
+  risky_methods_allowed: []
+  explicitly_allowed_risky_paths: []
+  allowed_profiles: [advanced]
+  advanced_verification: true
+  lab_targets: [127.0.0.1]
