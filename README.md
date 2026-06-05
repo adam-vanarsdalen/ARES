@@ -121,12 +121,29 @@ curl -s \
   http://localhost:8001/assess
 ```
 
+## Mode Semantics
+
+| Mode | Behavior |
+|------|----------|
+| `passive_only` | DNS, WHOIS, Certificate Transparency, InternetDB, and manual dork suggestions. No nmap, no redteam, no JS crawl, no active HTTP unless `ARES_PASSIVE_HTTP_ALLOWED=true`. |
+| `osint_only` | OSINT phase only with capped HTTP probe, passive URL discovery, and JS intelligence/crawl. No nmap or redteam. |
+| `light_active` | OSINT plus light recon such as version disclosure, TLS audit, additional HTTP probes, and CVE enrichment from observed HTTP evidence. No nmap or redteam. |
+| `recon_only` | Target-level HTTP probe, recon, CVE enrichment, and TLS audit without OSINT expansion. No redteam. |
+| `full` | All enabled phases inside caps, including non-destructive redteam verification. |
+
 ## Configuration
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `ARES_API_KEY` | string | none | Required static API key for authenticated routes. Never commit real values. |
 | `ARES_ENV` | string | `prod` | Runtime mode. In `prod`, startup refuses an empty API key. |
+| `ARES_PROFILE` | enum | `recon` | Default capability profile: `passive`, `recon`, `advanced`, `lab`, or `custom`. |
+| `ARES_ROE_POLICY_PATH` | path | none | Optional YAML Rules of Engagement policy loaded for capability decisions. |
+| `ARES_ENABLE_ADVANCED_VERIFICATION` | boolean | `false` | Enables the advanced profile capability gate. RoE is still required by default. |
+| `ARES_REQUIRE_ROE_FOR_ADVANCED` | boolean | `true` | Requires a loaded RoE policy before advanced verification is authorized. |
+| `ARES_ENABLE_LAB_EXPLOIT_SIMULATION` | boolean | `false` | Enables lab-profile simulation capabilities; real public targets remain blocked. |
+| `ARES_REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM` | boolean | `true` | Restricts lab simulation to localhost or RoE-declared lab targets. |
+| `ARES_NUCLEI_PROFILE` | enum | `safe` | Requested Nuclei policy profile. Nuclei integration is added in a later capability pass. |
 | `ARES_OLLAMA_MODEL` | string | `qwen3.5:9b` | Ollama model used for synthesis and kill chain analysis. |
 | `ARES_OLLAMA_BASE_URL` | URL | `http://localhost:11434` | Preferred Ollama API base URL. Compose sets this to `http://ollama:11434`. |
 | `ARES_OLLAMA_BASE` | URL | `http://localhost:11434` | Legacy fallback name still accepted by config. |
@@ -145,6 +162,34 @@ curl -s \
 | `ARES_MISCONFIG_TIMEOUT_S` | float seconds | `2.0` | Per-request timeout for misconfiguration checks. |
 | `ARES_MISCONFIG_TOTAL_BUDGET_S` | float seconds | `20.0` | Total budget for common-path misconfiguration checks. |
 | `ARES_JS_INTEL_BUDGET_S` | float seconds | `20.0` | Total budget for JavaScript intelligence collection. |
+| `ARES_EXTERNAL_LOOKUP_TIMEOUT_S` | float seconds | `8.0` | Timeout for passive external enrichment lookups such as Shodan InternetDB. |
+| `ARES_PASSIVE_HTTP_ALLOWED` | boolean | `false` | Allows robots/sitemap/security.txt HTTP fetches in `passive_only` mode. |
+| `ARES_ENABLE_NMAP` | boolean | `true` | Enables `port_scan`; mode policy still disables nmap in `passive_only` and `light_active`. |
+| `ARES_ENABLE_REVERSE_IP` | boolean | `false` | Enables passive HackerTarget reverse-IP enrichment. Disabled by default because ownership is unverified. |
+| `ARES_REVERSE_IP_MAX_HOSTS` | integer | `50` | Maximum ownership-unverified reverse-IP hostnames retained. |
+| `ARES_PASSIVE_URL_TIMEOUT_S` | float seconds | `8.0` | Per-request timeout for robots.txt, sitemap.xml, and security.txt discovery. |
+| `ARES_SITEMAP_MAX_CHILDREN` | integer | `5` | Maximum child sitemaps fetched from a sitemap index. |
+| `ARES_PASSIVE_URL_MAX` | integer | `100` | Maximum in-scope passive URLs retained for crawling/reporting. |
+| `ARES_SUBDOMAIN_WORDLIST_PATH` | path | `wordlists/subdomains-500.txt` | Subdomain candidate wordlist path, relative to the repo root unless absolute. |
+| `ARES_SUBDOMAIN_WORDLIST_MAX` | integer | `500` | Maximum subdomain candidates loaded from the configured wordlist. |
+| `ARES_VERSION_DISCLOSURE_TIMEOUT_S` | float seconds | `8.0` | Per-request timeout for version disclosure and framework exposure probes. |
+| `ARES_EVIDENCE_PREVIEW_MAX_CHARS` | integer | `500` | Maximum evidence preview characters retained after redaction. |
+| `ARES_RECON_ADDITIONAL_TARGET_MAX` | integer | `20` | Maximum OSINT-discovered HTTP targets probed during recon. |
+| `ARES_ASSET_INVENTORY_MAX_HTTP_PROBES` | integer | `20` | Maximum high-priority in-scope host assets probed during OSINT inventory enrichment. |
+| `ARES_TLS_TIMEOUT_S` | float seconds | `8.0` | Timeout for TLS certificate/protocol checks. |
+| `ARES_TLS_ADDITIONAL_TARGET_MAX` | integer | `5` | Maximum high-priority additional HTTPS targets audited for TLS posture. |
+| `ARES_ENABLE_RISKY_METHOD_CHECKS` | boolean | `false` | Enables zero-body PUT/DELETE method checks. Disabled by default. |
+| `ARES_API_ENUM_MAX_PATHS` | integer | `12` | Maximum capped API discovery paths checked by redteam verification. |
+| `ARES_REDTEAM_MAX_VERIFICATIONS` | integer | `20` | Maximum non-destructive redteam verification actions per assessment. |
+| `ARES_ATTACK_GRAPH_MAX_ROUTE_NODES` | integer | `50` | Maximum route nodes included in the attack graph before overflow metadata is recorded. |
+| `ARES_ATTACK_GRAPH_MAX_FORM_NODES` | integer | `30` | Maximum form nodes included in the attack graph before overflow metadata is recorded. |
+| `ARES_ATTACK_GRAPH_MAX_API_NODES` | integer | `50` | Maximum API endpoint nodes included in the attack graph before overflow metadata is recorded. |
+| `ARES_NVD_API_KEY` | string | none | Optional NVD API key. Never commit real values. |
+| `ARES_NVD_MIN_DELAY_S` | float seconds | `6.5` without key, `0.8` with key | Minimum delay between uncached NVD requests. |
+| `ARES_CVE_CACHE_TTL_S` | integer seconds | `86400` | In-memory CVE lookup cache TTL. |
+| `ARES_ENABLE_VULNERS` | boolean | `false` | Enables optional Vulners fallback when API key is configured. |
+| `ARES_VULNERS_API_KEY` | string | none | Optional Vulners API key. Never commit real values. |
+| `ARES_ENABLE_MANUAL_SECRET_VERIFY` | boolean | `false` | Enables the manual-only `/manual/verify-secret` stub. It never persists submitted values or calls provider APIs. |
 | `ARES_MAX_CONCURRENT_SESSIONS` | integer | `5` | Global cap on running assessments. |
 | `ARES_MAX_SESSIONS_PER_MINUTE` | integer | `10` | New assessment rate limit. |
 | `ARES_EVENT_QUEUE_SIZE` | integer | `1000` | In-memory SSE event queue size per session. |
@@ -156,11 +201,46 @@ Variables present in `.env.example`:
 - `ARES_API_KEY`
 - `ARES_ENV`
 - `ARES_OLLAMA_MODEL`
+- `ARES_PROFILE`
+- `ARES_ROE_POLICY_PATH`
+- `ARES_ENABLE_ADVANCED_VERIFICATION`
+- `ARES_REQUIRE_ROE_FOR_ADVANCED`
+- `ARES_ENABLE_LAB_EXPLOIT_SIMULATION`
+- `ARES_REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM`
+- `ARES_NUCLEI_PROFILE`
 - `ARES_ALLOWED_ORIGINS`
 - `ARES_DB_PATH`
 - `ARES_SESSION_TTL_SECONDS`
 - `ARES_HTTP_PROBE_TOTAL_BUDGET_S`
 - `ARES_MISCONFIG_TOTAL_BUDGET_S`
+- `ARES_EXTERNAL_LOOKUP_TIMEOUT_S`
+- `ARES_PASSIVE_HTTP_ALLOWED`
+- `ARES_ENABLE_NMAP`
+- `ARES_ENABLE_REVERSE_IP`
+- `ARES_REVERSE_IP_MAX_HOSTS`
+- `ARES_PASSIVE_URL_TIMEOUT_S`
+- `ARES_SITEMAP_MAX_CHILDREN`
+- `ARES_PASSIVE_URL_MAX`
+- `ARES_SUBDOMAIN_WORDLIST_PATH`
+- `ARES_SUBDOMAIN_WORDLIST_MAX`
+- `ARES_VERSION_DISCLOSURE_TIMEOUT_S`
+- `ARES_EVIDENCE_PREVIEW_MAX_CHARS`
+- `ARES_RECON_ADDITIONAL_TARGET_MAX`
+- `ARES_ASSET_INVENTORY_MAX_HTTP_PROBES`
+- `ARES_TLS_TIMEOUT_S`
+- `ARES_TLS_ADDITIONAL_TARGET_MAX`
+- `ARES_ENABLE_RISKY_METHOD_CHECKS`
+- `ARES_API_ENUM_MAX_PATHS`
+- `ARES_REDTEAM_MAX_VERIFICATIONS`
+- `ARES_ATTACK_GRAPH_MAX_ROUTE_NODES`
+- `ARES_ATTACK_GRAPH_MAX_FORM_NODES`
+- `ARES_ATTACK_GRAPH_MAX_API_NODES`
+- `ARES_NVD_API_KEY`
+- `ARES_NVD_MIN_DELAY_S`
+- `ARES_CVE_CACHE_TTL_S`
+- `ARES_ENABLE_VULNERS`
+- `ARES_VULNERS_API_KEY`
+- `ARES_ENABLE_MANUAL_SECRET_VERIFY`
 - `ARES_MAX_CONCURRENT_SESSIONS`
 - `ARES_MAX_SESSIONS_PER_MINUTE`
 - `ARES_EVENT_QUEUE_SIZE`

@@ -9,9 +9,12 @@ Adds:
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import re
+import urllib.parse
+from datetime import datetime, timezone
 
 from ollama_compat import OllamaClient as Anthropic, DEFAULT_MODEL, extract_first_json_object
 from utils.scope_validator import Scope, ScopeValidator
@@ -25,25 +28,442 @@ from utils.evidence_model import (
     severity_to_priority,
 )
 from utils.report_generator import generate_report
+from utils.capability_profiles import CapabilityProfile, profile_summary, resolve_profile
+from utils.roe import evaluate_capability_action, load_roe_policy
+from utils.config import (
+    ASSET_INVENTORY_MAX_HTTP_PROBES,
+    ENABLE_NMAP,
+    ENABLE_REVERSE_IP,
+    ENABLE_RISKY_METHOD_CHECKS,
+    PASSIVE_HTTP_ALLOWED,
+    RECON_ADDITIONAL_TARGET_MAX,
+    PROFILE,
+    ROE_POLICY_PATH,
+    REDTEAM_MAX_VERIFICATIONS,
+    SUBDOMAIN_WORDLIST_MAX,
+    SUBDOMAIN_WORDLIST_PATH,
+    TLS_ADDITIONAL_TARGET_MAX,
+    TLS_TIMEOUT,
+    EXTERNAL_LOOKUP_TIMEOUT,
+)
 from tools.network_tools import (
     dns_lookup, whois_lookup, subdomain_enumerate,
-    http_probe, check_common_misconfigs, port_scan, fetch_cve_data
+    http_probe, check_common_misconfigs, port_scan, fetch_cve_data, redact_org_osint,
+    load_subdomain_wordlist, probe_version_disclosure, subdomain_wordlist_source,
 )
 from tools.cert_transparency import cert_transparency_recon
+from tools.external_enrichment import internetdb_lookup, reverse_ip_lookup
+from tools.passive_url_discovery import passive_url_discovery
 from tools.js_intelligence import js_intelligence
+from tools.tls_audit import tls_audit
+from tools.redteam_verification import (
+    discover_auth_panels,
+    enumerate_api_endpoints,
+    test_clickjacking,
+    test_host_header_injection,
+    test_http_methods,
+    test_open_redirect,
+)
 from tools.epss_scoring import enrich_cves_with_epss, epss_summary
 from tools.attack_graph import build_attack_graph, generate_kill_chains, map_to_mitre
 
 client = Anthropic()
 
-SUBDOMAIN_WORDLIST = [
-    "www", "mail", "ftp", "remote", "blog", "webmail", "server", "ns1", "ns2",
-    "smtp", "secure", "vpn", "api", "dev", "staging", "test", "portal", "admin",
-    "beta", "app", "cloud", "cdn", "git", "jenkins", "jira", "confluence",
-    "gitlab", "grafana", "kibana", "monitor", "status", "docs", "help", "support",
-    "shop", "store", "login", "auth", "internal", "intranet", "wiki"
-]
+HIGH_INTEREST_SUBDOMAIN_MARKERS = (
+    "api", "admin", "auth", "sso", "oauth", "idp", "dev", "staging",
+    "stage", "preprod", "uat", "vpn", "portal", "dashboard",
+)
+HIGH_INTEREST_PATH_MARKERS = (
+    "login", "admin", "auth", "sso", "oauth", "graphql", "swagger",
+    "openapi", "api-docs",
+)
+ASSET_PRIORITY_MARKERS = HIGH_INTEREST_SUBDOMAIN_MARKERS
+VALID_MODES = {"full", "osint_only", "passive_only", "light_active", "recon_only"}
 
+_SECRET_RAW_KEYS = {"value", "secret", "raw", "raw_secret", "token", "password", "key"}
+
+
+def _redact_secret_value(value: str) -> str:
+    value = str(value or "")
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return value[:2] + "..."
+    return value[:4] + "..." + value[-4:]
+
+
+def _safe_secret_type(secret: dict) -> str:
+    label = str(secret.get("type") or "API Key")
+    lower = label.lower()
+    if "aws" in lower and "access" in lower:
+        return "AWS Access Key"
+    if "github" in lower:
+        return "GitHub Token"
+    if "stripe" in lower:
+        return "Stripe Key"
+    if "bearer" in lower:
+        return "Bearer Token"
+    if "jwt" in lower:
+        return "JWT Token"
+    if "gitlab" in lower:
+        return "GitLab Token"
+    if "password" in lower:
+        return "Password"
+    if "secret" in lower:
+        return "Secret"
+    return label
+
+
+def _secret_guidance(secret_type: str) -> tuple[str, str]:
+    lower = secret_type.lower()
+    if "aws access" in lower:
+        return (
+            "Access Key ID alone cannot verify AWS access without the paired secret access key. "
+            "If this ID was exposed client-side, rotate it and review CloudTrail/IAM usage manually.",
+            "HIGH",
+        )
+    if "github" in lower:
+        return (
+            "Use only operator-supplied, authorized local metadata checks. Do not call api.github.com "
+            "with a discovered token automatically.",
+            "HIGH",
+        )
+    if "stripe" in lower:
+        return (
+            "Treat secret-looking Stripe keys in client-side code as urgent rotation candidates. "
+            "Do not call Stripe APIs with the discovered value automatically.",
+            "HIGH",
+        )
+    return (
+        "Rotate the exposed value and perform provider-specific access review through an authorized operator workflow.",
+        "MEDIUM",
+    )
+
+
+def build_secret_verification_queue(js_data: dict) -> list[dict]:
+    """Build manual-only verification guidance from redacted JS secret findings."""
+    queue = []
+    seen = set()
+    for secret in js_data.get("secrets", []) or []:
+        secret_type = _safe_secret_type(secret)
+        preview = secret.get("value_preview") or _redact_secret_value(secret.get("value", ""))
+        source_url = str(secret.get("source_url") or secret.get("source") or js_data.get("page_url") or js_data.get("url") or "")
+        seed = "|".join([
+            secret_type,
+            str(preview),
+            source_url,
+            str(secret.get("full_length", "")),
+        ])
+        secret_id = "secret-" + hashlib.sha256(seed.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        if secret_id in seen:
+            continue
+        seen.add(secret_id)
+        recommended_check, default_confidence = _secret_guidance(secret_type)
+        confidence = str(secret.get("confidence") or default_confidence).upper()
+        if confidence not in {"HIGH", "MEDIUM", "LOW"}:
+            confidence = default_confidence
+        queue.append({
+            "secret_id": secret_id,
+            "type": secret_type,
+            "value_preview": preview,
+            "source_url": source_url,
+            "confidence": confidence,
+            "manual_verification": True,
+            "recommended_safe_check": recommended_check,
+            "raw_secret_stored": False,
+            "rotation_recommended": True,
+        })
+    return queue
+
+
+def _sanitize_js_data(js_data: dict) -> dict:
+    """Strip raw credential-looking fields from JS intelligence before emitting or persisting."""
+    sanitized = dict(js_data or {})
+    safe_secrets = []
+    for secret in sanitized.get("secrets", []) or []:
+        item = {
+            k: v for k, v in dict(secret).items()
+            if k not in _SECRET_RAW_KEYS and not k.startswith("raw_")
+        }
+        if not item.get("value_preview") and secret.get("value"):
+            item["value_preview"] = _redact_secret_value(secret.get("value", ""))
+        item["raw_secret_stored"] = False
+        safe_secrets.append(item)
+    sanitized["secrets"] = safe_secrets
+    return sanitized
+
+
+def _host_from_url_or_host(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    parsed = urllib.parse.urlparse(raw if "://" in raw else f"//{raw}")
+    return (parsed.hostname or raw).strip().lower().rstrip(".")
+
+
+def _inventory_priority(host: str, url: str = "", source: str = "") -> tuple[int, list[str]]:
+    haystack = f"{host} {url}".lower()
+    hints = [marker for marker in ASSET_PRIORITY_MARKERS if marker in haystack]
+    if hints:
+        base = 0
+    elif source == "target":
+        base = 1
+    elif source in {"passive_url", "crawl"}:
+        base = 2
+    elif source in {"ct", "subdomain"}:
+        base = 3
+    elif source == "internetdb":
+        base = 4
+    else:
+        base = 5
+    return base, [f"priority marker: {hint}" for hint in hints]
+
+
+def _make_inventory_asset(host: str, url: str, source: str, in_scope: bool,
+                          http_probe_data: dict | None = None,
+                          tech_stack: list | None = None,
+                          cpe_strings: list | None = None,
+                          risk_hints: list | None = None,
+                          priority: int | None = None) -> dict:
+    host = _host_from_url_or_host(host or url)
+    url = url or (f"https://{host}" if host else "")
+    computed_priority, computed_hints = _inventory_priority(host, url, source)
+    probe = http_probe_data or {}
+    hints = list(dict.fromkeys((risk_hints or []) + computed_hints))
+    tech = list(dict.fromkeys(list(tech_stack or []) + list(probe.get("tech_signals", []) or [])))
+    cpes = list(dict.fromkeys(list(cpe_strings or []) + list(probe.get("cpe_strings", []) or [])))
+    return {
+        "asset_id": "asset-" + hashlib.sha1("|".join([host, url, source]).encode("utf-8", errors="ignore")).hexdigest()[:12],
+        "host": host,
+        "url": url,
+        "source": source,
+        "in_scope": bool(in_scope),
+        "http_probe": probe,
+        "tech_stack": tech,
+        "cpe_strings": cpes,
+        "risk_hints": hints,
+        "priority": computed_priority if priority is None else priority,
+        "notable_findings_count": len(hints),
+    }
+
+
+def _merge_inventory_assets(assets: list[dict]) -> list[dict]:
+    merged: dict[tuple[str, str], dict] = {}
+    source_rank = {"target": 0, "dns": 1, "ct": 2, "subdomain": 3, "internetdb": 4, "passive_url": 5, "crawl": 6, "additional_recon": 7}
+    for asset in assets:
+        if not asset.get("host") and not asset.get("url"):
+            continue
+        key = (asset.get("host", ""), asset.get("url", ""))
+        current = merged.get(key)
+        if current is None:
+            merged[key] = dict(asset)
+            continue
+        current["source"] = min([current.get("source", ""), asset.get("source", "")], key=lambda s: source_rank.get(s, 99))
+        current["in_scope"] = current.get("in_scope") or asset.get("in_scope")
+        current["priority"] = min(current.get("priority", 9), asset.get("priority", 9))
+        current["risk_hints"] = list(dict.fromkeys(current.get("risk_hints", []) + asset.get("risk_hints", [])))
+        current["tech_stack"] = list(dict.fromkeys(current.get("tech_stack", []) + asset.get("tech_stack", [])))
+        current["cpe_strings"] = list(dict.fromkeys(current.get("cpe_strings", []) + asset.get("cpe_strings", [])))
+        if asset.get("http_probe") and not current.get("http_probe"):
+            current["http_probe"] = asset.get("http_probe", {})
+        current["notable_findings_count"] = len(current.get("risk_hints", []))
+    return sorted(merged.values(), key=lambda item: (item.get("priority", 9), item.get("host", ""), item.get("url", "")))
+
+
+def build_asset_inventory(target: str, dns: dict, subdomains: dict, ct_data: dict, internetdb: dict,
+                          passive_urls: dict, js_data: dict, http_data: dict,
+                          validator: ScopeValidator | None = None) -> list[dict]:
+    """Build scoped per-asset inventory used as OSINT-to-recon feedback."""
+    validator = validator or ScopeValidator(Scope(domains=[target]))
+    assets = []
+    main_url = http_data.get("url") or f"https://{target}"
+    assets.append(_make_inventory_asset(
+        target,
+        main_url,
+        "target",
+        True,
+        http_probe_data=http_data,
+        tech_stack=http_data.get("tech_signals", []),
+        cpe_strings=http_data.get("cpe_strings", []),
+    ))
+    if dns.get("resolved_ip"):
+        assets.append(_make_inventory_asset(dns["resolved_ip"], "", "dns", True))
+    for source, items in (
+        ("subdomain", subdomains.get("discovered_subdomains", [])),
+        ("ct", ct_data.get("live_subdomains", []) + ct_data.get("interesting_subdomains", [])),
+    ):
+        for item in items:
+            host = item.get("subdomain", "") if isinstance(item, dict) else str(item)
+            url = f"https://{host}"
+            in_scope, _ = validator.validate(url)
+            assets.append(_make_inventory_asset(host, url, source, in_scope))
+    for host in internetdb.get("hostnames", []) or []:
+        url = f"https://{host}"
+        in_scope, _ = validator.validate(url)
+        if in_scope:
+            assets.append(_make_inventory_asset(host, url, "internetdb", True, cpe_strings=internetdb.get("cpes", [])))
+    for url in passive_urls.get("discovered_urls", []) or []:
+        in_scope, _ = validator.validate(url)
+        assets.append(_make_inventory_asset(_host_from_url_or_host(url), url, "passive_url", in_scope))
+    for page in js_data.get("pages_crawled", []) or []:
+        url = page.get("url", "") if isinstance(page, dict) else str(page)
+        in_scope, _ = validator.validate(url)
+        assets.append(_make_inventory_asset(_host_from_url_or_host(url), url, "crawl", in_scope))
+    return _merge_inventory_assets(assets)
+
+
+def select_inventory_http_probe_targets(asset_inventory: list[dict], max_probes: int = ASSET_INVENTORY_MAX_HTTP_PROBES) -> list[dict]:
+    candidates = [
+        asset for asset in asset_inventory
+        if asset.get("in_scope")
+        and asset.get("source") in {"subdomain", "ct", "internetdb"}
+        and not asset.get("http_probe")
+        and asset.get("priority", 9) <= 1
+        and asset.get("url")
+    ]
+    return sorted(candidates, key=lambda item: (item.get("priority", 9), item.get("host", "")))[:max_probes]
+
+
+def merge_additional_recon_into_inventory(asset_inventory: list[dict], additional_results: dict, validator: ScopeValidator | None = None) -> list[dict]:
+    assets = list(asset_inventory or [])
+    probes_by_url = {item.get("url"): item for item in additional_results.get("probes", []) or []}
+    for target_item in additional_results.get("targets", []) or []:
+        url = target_item.get("url", "")
+        if not url:
+            continue
+        in_scope = True
+        if validator:
+            in_scope, _ = validator.validate(url)
+        probe = probes_by_url.get(url, {})
+        assets.append(_make_inventory_asset(
+            _host_from_url_or_host(url),
+            url,
+            "additional_recon",
+            in_scope,
+            http_probe_data=probe,
+            tech_stack=probe.get("tech_signals", []),
+            cpe_strings=probe.get("cpe_strings", []),
+            risk_hints=[target_item.get("reason", "")] if target_item.get("reason") else [],
+            priority=target_item.get("priority", 5),
+        ))
+    return _merge_inventory_assets(assets)
+
+
+def _base_url_for_target(target: str, osint_data: dict) -> str:
+    url = osint_data.get("collection_summary", {}).get("http_url") or f"https://{target}"
+    if "://" not in url:
+        url = f"https://{url}"
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.netloc:
+        return f"https://{target}"
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "/", "", "", ""))
+
+
+def _normalize_recon_url(base_url: str, value: str) -> str | None:
+    value = (value or "").strip()
+    if not value or value.startswith(("#", "javascript:", "mailto:", "tel:")):
+        return None
+    full = urllib.parse.urljoin(base_url, value)
+    parsed = urllib.parse.urlparse(full)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", parsed.query, ""))
+
+
+def _recon_url_key(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    netloc = parsed.netloc.lower()
+    path = parsed.path or "/"
+    return urllib.parse.urlunparse((parsed.scheme.lower(), netloc, path.rstrip("/") or "/", "", parsed.query, ""))
+
+
+def _path_priority(url: str, source: str, method: str = "GET") -> tuple[int, str]:
+    path = urllib.parse.urlparse(url).path.lower()
+    query = urllib.parse.urlparse(url).query.lower()
+    joined = path + ("?" + query if query else "")
+    if "/api/" in joined or joined.startswith("/api") or "graphql" in joined:
+        return 0, "API or GraphQL endpoint"
+    if source == "form" and method.upper() == "POST":
+        return 1, "POST form action URL (GET probe only; form not submitted)"
+    if any(marker in joined for marker in ("login", "admin", "auth", "sso", "oauth")):
+        return 2, "login/admin/auth surface"
+    if any(marker in joined for marker in ("swagger", "openapi", "api-docs", "graphql")):
+        return 3, "API documentation or schema surface"
+    if source in ("subdomain", "internetdb"):
+        return 4, "high-interest subdomain"
+    if source == "passive_url":
+        return 5, "passive robots/sitemap URL"
+    return 6, source
+
+
+def _is_high_interest_subdomain(hostname: str) -> bool:
+    first = (hostname or "").split(".", 1)[0].lower()
+    return any(marker == first or first.startswith(marker + "-") or first.startswith(marker) for marker in HIGH_INTEREST_SUBDOMAIN_MARKERS)
+
+
+def build_additional_recon_targets(
+    target: str,
+    osint_data: dict,
+    max_targets: int = 25,
+    validator: ScopeValidator | None = None,
+) -> list[dict]:
+    """Build capped, GET-safe additional HTTP targets from OSINT application surface."""
+    validator = validator or ScopeValidator(Scope(domains=[target, f"*.{target}"]))
+    base_url = _base_url_for_target(target, osint_data)
+    candidates = []
+
+    def add(raw_url: str, source: str, reason: str, method: str = "GET", priority: int | None = None):
+        url = _normalize_recon_url(base_url, raw_url)
+        if not url:
+            return
+        valid, _ = validator.validate(url)
+        if not valid:
+            return
+        effective_priority = priority
+        effective_reason = reason
+        if effective_priority is None:
+            effective_priority, inferred = _path_priority(url, source, method)
+            effective_reason = reason or inferred
+        candidates.append({
+            "url": url,
+            "source": source,
+            "reason": effective_reason,
+            "method": method.upper() if method else "UNKNOWN",
+            "priority": effective_priority,
+        })
+
+    js_data = osint_data.get("_js_data", {})
+    for endpoint in js_data.get("endpoints", []):
+        add(endpoint, "js", "", method="GET")
+    for form in js_data.get("forms", []):
+        add(form.get("action", ""), "form", "form action URL (not submitted)", method=form.get("method", "UNKNOWN"))
+    for page in js_data.get("pages_crawled", []):
+        add(page.get("url", ""), "crawl", "crawled page", method="GET")
+    for url in osint_data.get("_passive_urls", {}).get("discovered_urls", []):
+        add(url, "passive_url", "passive robots/sitemap URL", method="GET")
+
+    subdomain_items = list(osint_data.get("subdomains", [])) + list(osint_data.get("_ct_subdomains", []))
+    for item in subdomain_items:
+        host = item.get("subdomain") if isinstance(item, dict) else str(item)
+        if host and _is_high_interest_subdomain(host):
+            add(f"https://{host}", "subdomain", "high-interest subdomain", method="GET", priority=4)
+
+    internetdb = osint_data.get("_external_enrichment", {}).get("internetdb", {})
+    for host in internetdb.get("hostnames", []):
+        if host and _is_high_interest_subdomain(host):
+            add(f"https://{host}", "internetdb", "in-scope InternetDB hostname", method="GET", priority=4)
+
+    deduped = []
+    seen = set()
+    for item in sorted(candidates, key=lambda entry: (entry["priority"], entry["url"])):
+        key = _recon_url_key(item["url"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+        if len(deduped) >= max_targets:
+            break
+    return deduped
 
 def _clean_json(text: str) -> str:
     """Strip <think> blocks, markdown fences, then extract the first JSON object."""
@@ -53,7 +473,11 @@ def _clean_json(text: str) -> str:
     return extract_first_json_object(text.strip())
 
 
-def _grounded_osint_summary(target, resolved_ip, tech_signals, ct_total, js_data, misconfigs, http_data):
+def _grounded_osint_summary(target, resolved_ip, tech_signals, ct_total, js_data, misconfigs, http_data, external_enrichment=None, passive_urls=None):
+    external_enrichment = external_enrichment or {}
+    internetdb = external_enrichment.get("internetdb", {})
+    reverse_ip = external_enrichment.get("reverse_ip", {})
+    passive_urls = passive_urls or {}
     parts = []
     if resolved_ip:
         parts.append(f"{target} resolved to {resolved_ip}.")
@@ -76,6 +500,29 @@ def _grounded_osint_summary(target, resolved_ip, tech_signals, ct_total, js_data
             f"Misconfiguration checks reached the time budget after {misconfigs.get('paths_checked', 0)}/"
             f"{misconfigs.get('paths_total', 0)} paths."
         )
+    if internetdb.get("status") == "success":
+        parts.append(
+            "InternetDB passive enrichment observed "
+            f"{len(internetdb.get('ports', []))} ports, "
+            f"{len(internetdb.get('hostnames', []))} hostnames, "
+            f"{len(internetdb.get('vulns', []))} vulnerability references, and "
+            f"{len(internetdb.get('cpes', []))} CPEs."
+        )
+    elif internetdb.get("status") in ("no_data", "failed"):
+        parts.append(f"InternetDB enrichment status: {internetdb.get('status')}.")
+    if reverse_ip:
+        parts.append(
+            f"Reverse-IP enrichment status: {reverse_ip.get('status', 'skipped')} "
+            f"with {len(reverse_ip.get('hostnames', []))} ownership-unverified hostnames."
+        )
+    if passive_urls:
+        security_status = passive_urls.get("security_txt", {}).get("status_code", 0)
+        parts.append(
+            "Passive URL discovery found "
+            f"{len(passive_urls.get('discovered_urls', []))} in-scope URLs, "
+            f"{len(passive_urls.get('suggested_dorks', []))} suggested manual dorks, and "
+            f"security.txt status {security_status or 'not found'}."
+        )
     return " ".join(parts)
 
 
@@ -91,7 +538,12 @@ def _dedupe_cves(cves: list[dict]) -> list[dict]:
     return deduped
 
 
-def _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_data, js_data, report):
+def _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_data, js_data, report, external_enrichment=None, passive_urls=None, secret_verification_queue=None):
+    external_enrichment = external_enrichment or {}
+    internetdb = external_enrichment.get("internetdb", {})
+    reverse_ip = external_enrichment.get("reverse_ip", {})
+    passive_urls = passive_urls or {}
+    secret_verification_queue = secret_verification_queue if secret_verification_queue is not None else build_secret_verification_queue(js_data)
     tech_signals = list(http.get("tech_signals", []))
     tech_inventory = list(http.get("tech_details", []))
     discovered_subdomains = merge_subdomains(
@@ -99,7 +551,15 @@ def _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_da
         ct_data.get("live_subdomains", []),
         ct_data.get("interesting_subdomains", []),
     )
-    org = whois.get("fields", {}).get("Registrant Organization") or None
+    org_osint = whois.get("org_osint") or {
+        "organization": whois.get("fields", {}).get("Registrant Organization", ""),
+        "registrar": whois.get("fields", {}).get("Registrar", ""),
+        "emails": [],
+        "abuse_emails": [],
+        "source": "whois",
+    }
+    public_org_osint = redact_org_osint(org_osint)
+    org = org_osint.get("organization") or None
     cdn = "Cloudflare" if any("cloudflare" in str(t).lower() for t in tech_signals) else None
     coverage_gaps = []
     if http.get("partial"):
@@ -142,6 +602,11 @@ def _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_da
         for tech in tech_inventory
         if tech.get("name")
     )
+    if internetdb.get("status") == "success":
+        for hostname in internetdb.get("hostnames", []):
+            assets.append(make_asset("hostname", hostname, confidence="MEDIUM", source="shodan_internetdb"))
+        for port in internetdb.get("ports", []):
+            assets.append(make_asset("service", f"{internetdb.get('ip', '')}:{port}", confidence="MEDIUM", source="shodan_internetdb"))
     evidence_log = [
         make_evidence("dns_lookup", "resolution", f"{target} resolved to {dns['resolved_ip']}", confidence="HIGH")
         for _ in [0] if dns.get("resolved_ip")
@@ -187,6 +652,45 @@ def _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_da
                 page_url=js_data.get("page_url", target),
             )
         )
+    if internetdb:
+        evidence_log.append(
+            make_evidence(
+                "shodan_internetdb",
+                "external_enrichment",
+                f"InternetDB status {internetdb.get('status', 'unknown')} for {internetdb.get('ip', dns.get('resolved_ip', ''))}",
+                confidence="MEDIUM",
+                ports=internetdb.get("ports", []),
+                hostnames=internetdb.get("hostnames", []),
+                vulns=internetdb.get("vulns", []),
+                cpes=internetdb.get("cpes", []),
+                error=internetdb.get("error", ""),
+            )
+        )
+    if reverse_ip:
+        evidence_log.append(
+            make_evidence(
+                "hackertarget_reverse_ip",
+                "reverse_ip_enrichment",
+                f"Reverse-IP status {reverse_ip.get('status', 'unknown')} for {reverse_ip.get('query', '')}",
+                confidence="LOW",
+                hostnames=reverse_ip.get("hostnames", []),
+                ownership_unverified=True,
+                error=reverse_ip.get("error", ""),
+            )
+        )
+    if passive_urls:
+        evidence_log.append(
+            make_evidence(
+                "passive_url_discovery",
+                "passive_url_inventory",
+                f"Passive URL discovery returned {len(passive_urls.get('discovered_urls', []))} in-scope URLs",
+                confidence="MEDIUM",
+                robots_status=passive_urls.get("robots", {}).get("status_code", 0),
+                sitemap_urls=len(passive_urls.get("sitemaps", {}).get("urls", [])),
+                security_txt_status=passive_urls.get("security_txt", {}).get("status_code", 0),
+                suggested_dorks_count=len(passive_urls.get("suggested_dorks", [])),
+            )
+        )
     coverage = [
         make_coverage("osint", "dns_lookup", "success" if dns.get("resolved_ip") else "partial", resolved_ip=dns.get("resolved_ip", "")),
         make_coverage("osint", "whois_lookup", "success" if whois.get("fields") else "partial"),
@@ -213,6 +717,31 @@ def _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_da
             details="time budget exhausted" if misconfigs.get("budget_exhausted") else "",
             findings=len(misconfigs.get("findings", [])),
         ),
+        make_coverage(
+            "osint",
+            "shodan_internetdb",
+            internetdb.get("status", "skipped") if internetdb else "skipped",
+            details=internetdb.get("error", "") if internetdb else "",
+            ports=len(internetdb.get("ports", [])) if internetdb else 0,
+            hostnames=len(internetdb.get("hostnames", [])) if internetdb else 0,
+            vulns=len(internetdb.get("vulns", [])) if internetdb else 0,
+            cpes=len(internetdb.get("cpes", [])) if internetdb else 0,
+        ),
+        make_coverage(
+            "osint",
+            "hackertarget_reverse_ip",
+            reverse_ip.get("status", "skipped") if reverse_ip else "skipped",
+            details=reverse_ip.get("error", "") if reverse_ip else "",
+            hostnames=len(reverse_ip.get("hostnames", [])) if reverse_ip else 0,
+            ownership_unverified=True,
+        ),
+        make_coverage(
+            "osint",
+            "passive_url_discovery",
+            "success" if passive_urls else "skipped",
+            discovered=len(passive_urls.get("discovered_urls", [])) if passive_urls else 0,
+            suggested_dorks=len(passive_urls.get("suggested_dorks", [])) if passive_urls else 0,
+        ),
     ]
     return {
         "summary": _grounded_osint_summary(
@@ -223,6 +752,8 @@ def _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_da
             js_data,
             misconfigs,
             http,
+            external_enrichment,
+            passive_urls,
         ),
         "infrastructure": {"hosting": "Unknown", "cdn": cdn, "org": org},
         "subdomains": discovered_subdomains,
@@ -236,6 +767,13 @@ def _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_da
             f"CT interesting subdomains: {len(ct_data.get('interesting_subdomains', []))}; "
             f"misconfig findings: {len(misconfigs.get('findings', []))}; "
             f"restricted paths: {len(misconfigs.get('restricted_findings', []))}; "
+            f"InternetDB ports: {len(internetdb.get('ports', []))}; "
+            f"InternetDB hostnames: {len(internetdb.get('hostnames', []))}; "
+            f"InternetDB vulns: {len(internetdb.get('vulns', []))}; "
+            f"InternetDB CPEs: {len(internetdb.get('cpes', []))}; "
+            f"reverse-IP unverified hostnames: {len(reverse_ip.get('hostnames', []))}; "
+            f"passive URLs: {len(passive_urls.get('discovered_urls', []))}; "
+            f"suggested dorks: {len(passive_urls.get('suggested_dorks', []))}; "
             f"page source: {js_data.get('page_url', http.get('url', target))}."
         ),
         "coverage_gaps": coverage_gaps,
@@ -243,6 +781,9 @@ def _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_da
         "assets": dedupe_by_key(assets, ("asset_type", "name", "value")),
         "evidence_log": evidence_log,
         "technology_inventory": tech_inventory,
+        "passive_url_discovery": passive_urls,
+        "secret_verification_queue": secret_verification_queue,
+        "org_osint": public_org_osint,
         "collection_summary": {
             "http_status": http.get("status_code"),
             "http_url": http.get("url", target),
@@ -250,6 +791,16 @@ def _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_da
             "ct_total_unique": ct_data.get("total_unique", 0),
             "ct_interesting": len(ct_data.get("interesting_subdomains", [])),
             "misconfig_budget_exhausted": bool(misconfigs.get("budget_exhausted")),
+            "internetdb_status": internetdb.get("status"),
+            "internetdb_ports": internetdb.get("ports", []),
+            "internetdb_hostnames": internetdb.get("hostnames", []),
+            "internetdb_vulns": internetdb.get("vulns", []),
+            "internetdb_cpes": internetdb.get("cpes", []),
+            "reverse_ip_status": reverse_ip.get("status"),
+            "reverse_ip_hostnames": reverse_ip.get("hostnames", []),
+            "reverse_ip_ownership_unverified": reverse_ip.get("ownership_unverified", True) if reverse_ip else True,
+            "passive_url_count": len(passive_urls.get("discovered_urls", [])),
+            "suggested_dorks_count": len(passive_urls.get("suggested_dorks", [])),
         },
     }
 
@@ -261,10 +812,29 @@ def _ground_vuln_report(target, osint, ports, cves, report):
     evidence_log = []
     service_inventory = []
 
-    for port_line in ports.get("open_ports", []):
+    for service in ports.get("service_inventory", []):
+        name = (
+            f"{service.get('port')}/{service.get('protocol', 'tcp')} "
+            f"{service.get('service', '')} {service.get('product', '')} {service.get('version', '')}"
+        ).strip()
         service_inventory.append(
-            make_asset("service", port_line, confidence="HIGH", source="port_scan")
+            make_asset(
+                "service",
+                name,
+                confidence=service.get("confidence", "MEDIUM"),
+                source="port_scan",
+                port=service.get("port"),
+                protocol=service.get("protocol"),
+                product=service.get("product"),
+                version=service.get("version"),
+                cpes=service.get("candidate_cpes", []),
+            )
         )
+    if not service_inventory:
+        for port_line in ports.get("open_ports", []):
+            service_inventory.append(
+                make_asset("service", port_line, confidence="HIGH", source="port_scan")
+            )
     if service_inventory:
         evidence_log.append(
             make_evidence(
@@ -273,16 +843,24 @@ def _ground_vuln_report(target, osint, ports, cves, report):
                 f"Observed {len(service_inventory)} open services",
                 confidence="HIGH",
                 open_ports=ports.get("open_ports", []),
+                structured_services=ports.get("service_inventory", []),
             )
         )
 
-    for secret in osint.get("_js_data", {}).get("secrets", []):
+    secret_queue = osint.get("_secret_verification_queue") or osint.get("secret_verification_queue") or build_secret_verification_queue(osint.get("_js_data", {}))
+    for secret in secret_queue:
         finding = enrich_finding({
             "title": f"Hardcoded {secret['type']} in JavaScript",
-            "description": f"Value preview: {secret['value_preview']}",
-            "cvss_score": 9.0 if secret.get("severity") == "CRITICAL" else 7.5,
-            "affected": "Client-side JavaScript",
-        }, severity="CRITICAL" if secret.get("severity") == "CRITICAL" else "HIGH",
+            "description": (
+                f"Manual verification queued for {secret['type']} from client-side JavaScript. "
+                f"Preview: {secret.get('value_preview', '')}. {secret.get('recommended_safe_check', '')}"
+            ),
+            "cvss_score": 9.0 if secret.get("confidence") == "HIGH" and secret.get("type") in {"AWS Access Key", "Stripe Key"} else 7.5,
+            "affected": secret.get("source_url") or "Client-side JavaScript",
+            "secret_id": secret.get("secret_id"),
+            "raw_secret_stored": False,
+            "manual_verification": True,
+        }, severity="CRITICAL" if secret.get("type") in {"AWS Access Key", "Stripe Key"} and secret.get("confidence") == "HIGH" else "HIGH",
            evidence_refs=["js_intelligence"], confidence="HIGH", exploitability="MEDIUM", business_impact="HIGH")
         if finding["cvss_score"] >= 9.0:
             critical_findings.append(finding)
@@ -329,13 +907,58 @@ def _ground_vuln_report(target, osint, ports, cves, report):
             "affected": "Web application responses",
         }, severity="MEDIUM", evidence_refs=["http_probe"], confidence="HIGH", exploitability="LOW", business_impact="MEDIUM"))
 
+    version_disclosure = osint.get("_version_disclosure", {})
+    for finding in version_disclosure.get("findings", []):
+        severity = finding.get("severity", "LOW")
+        score = {
+            "CRITICAL": 9.2,
+            "HIGH": 8.0,
+            "MEDIUM": 5.5,
+            "LOW": 3.1,
+        }.get(severity, 3.1)
+        entry = enrich_finding({
+            "title": finding.get("title", "Version Disclosure"),
+            "description": finding.get("description", ""),
+            "cvss_score": score,
+            "affected": finding.get("url", finding.get("path", "")),
+            "evidence_preview": finding.get("evidence_preview", ""),
+        }, severity=severity, evidence_refs=finding.get("evidence_refs", ["probe_version_disclosure"]),
+           confidence="HIGH", exploitability="LOW", business_impact="MEDIUM")
+        if severity == "CRITICAL":
+            critical_findings.append(entry)
+        elif severity == "HIGH":
+            high_findings.append(entry)
+        else:
+            medium_findings.append(entry)
+
+    tls_data = osint.get("_tls_audit", {})
+    for finding in tls_data.get("findings", []):
+        severity = finding.get("severity", "MEDIUM")
+        score = {"HIGH": 7.0, "MEDIUM": 5.0, "LOW": 3.0}.get(severity, 5.0)
+        entry = enrich_finding({
+            "title": finding.get("title", "TLS finding"),
+            "description": finding.get("description", ""),
+            "cvss_score": score,
+            "affected": f"{tls_data.get('target', target)}:{tls_data.get('port', 443)}",
+            "tls_evidence": finding.get("evidence", {}),
+        }, severity=severity, evidence_refs=finding.get("evidence_refs", ["tls_audit"]),
+           confidence="HIGH", exploitability="LOW", business_impact="MEDIUM")
+        if severity == "HIGH":
+            high_findings.append(entry)
+        else:
+            medium_findings.append(entry)
+
     attack_vectors = []
     if ports.get("open_ports"):
         attack_vectors.append("Exposed network services")
     if critical_findings or high_findings:
         attack_vectors.append("Public-facing application weaknesses")
-    if osint.get("_js_data", {}).get("secrets"):
+    if secret_queue:
         attack_vectors.append("Client-side secret exposure")
+    if version_disclosure.get("findings"):
+        attack_vectors.append("Exposed framework or version disclosure paths")
+    if tls_data.get("findings"):
+        attack_vectors.append("Weak TLS posture")
     coverage_gaps = list(osint.get("coverage_gaps", []))
     if ports.get("error"):
         coverage_gaps.append("port_scan_failed")
@@ -347,6 +970,39 @@ def _ground_vuln_report(target, osint, ports, cves, report):
                 f"Matched {len(cves)} CVEs to observed technologies",
                 confidence="MEDIUM" if any(not c.get("cvss_score") for c in cves) else "HIGH",
                 cve_ids=[c.get("id") for c in cves],
+            )
+        )
+    additional_targets = osint.get("_additional_targets", {})
+    if additional_targets.get("coverage", {}).get("targets_total", 0):
+        evidence_log.append(
+            make_evidence(
+                "additional_recon_targets",
+                "expanded_http_surface",
+                f"Probed {additional_targets.get('coverage', {}).get('probed', 0)} additional HTTP targets from OSINT",
+                confidence="MEDIUM",
+                coverage=additional_targets.get("coverage", {}),
+            )
+        )
+    if tls_data.get("coverage"):
+        evidence_log.append(
+            make_evidence(
+                "tls_audit",
+                "tls_posture",
+                f"TLS audit for {tls_data.get('target', target)} produced {len(tls_data.get('findings', []))} findings",
+                confidence="MEDIUM",
+                coverage=tls_data.get("coverage", {}),
+                protocols=tls_data.get("protocols", {}),
+            )
+        )
+    if version_disclosure.get("findings") or version_disclosure.get("coverage"):
+        evidence_log.append(
+            make_evidence(
+                "probe_version_disclosure",
+                "version_disclosure",
+                f"Checked {version_disclosure.get('coverage', {}).get('paths_total', 0)} framework/version paths",
+                confidence="MEDIUM",
+                coverage=version_disclosure.get("coverage", {}),
+                findings=len(version_disclosure.get("findings", [])),
             )
         )
 
@@ -482,12 +1138,45 @@ def _ground_redteam_report(target, vulns, test_results, kill_chain_data, report)
                 "evidence": f"Access-Control-Allow-Origin reflected as {result.get('acao')!r}.",
                 "exploitable": False,
             })
-        elif test_name == "default_credentials" and result.get("accessible_panels"):
+        elif test_name == "auth_panel_discovery" and result.get("accessible_panels"):
             panels = ", ".join(result.get("accessible_panels", []))
             pocs.append({
                 "name": "Admin panel discovery",
                 "payload": panels,
                 "result": "Accessible admin/login paths were discovered and require manual credential verification.",
+            })
+        elif test_name == "open_redirect" and result.get("confirmed"):
+            confirmed.append({
+                "name": finding_name or "Open redirect",
+                "severity": severity,
+                "evidence": f"Location reflected marker host: {result.get('location', '')}.",
+                "exploitable": False,
+            })
+        elif test_name == "http_methods" and result.get("findings"):
+            for method_finding in result.get("findings", []):
+                pocs.append({
+                    "name": method_finding.get("type", "HTTP method finding"),
+                    "payload": json.dumps(result.get("methods", {}))[:200],
+                    "result": "Non-destructive HTTP method probe returned reviewable evidence.",
+                })
+        elif test_name == "clickjacking" and result.get("confirmed"):
+            confirmed.append({
+                "name": finding_name or "Clickjacking exposure",
+                "severity": severity,
+                "evidence": "X-Frame-Options and CSP frame-ancestors were absent.",
+                "exploitable": False,
+            })
+        elif test_name == "host_header_injection" and result.get("reflected"):
+            pocs.append({
+                "name": "Host header reflection",
+                "payload": "Host: evil.example.invalid",
+                "result": "Host marker was reflected; manual verification required." if result.get("manual_verification_needed") else "Host marker reflected in redirect Location.",
+            })
+        elif test_name == "api_endpoint_discovery" and result.get("discovered"):
+            pocs.append({
+                "name": "API endpoint discovery",
+                "payload": ", ".join(item.get("path", "") for item in result.get("discovered", [])[:5]),
+                "result": f"{len(result.get('discovered', []))} API endpoints returned 200/401/403.",
             })
 
     unique_confirmed = []
@@ -529,21 +1218,84 @@ def _ground_redteam_report(target, vulns, test_results, kill_chain_data, report)
 
 
 class ARESPipeline:
-    def __init__(self, target, scope, mode, session, log_fn, phase_fn, emit_fn):
+    def __init__(
+        self,
+        target,
+        scope,
+        mode,
+        session,
+        log_fn,
+        phase_fn,
+        emit_fn,
+        profile=None,
+        roe_policy_path="",
+    ):
         self.target = target.strip()
         self.scope = scope
-        self.mode = mode.strip()
+        self.mode = mode.strip().lower()
+        if self.mode not in VALID_MODES:
+            raise ValueError(f"Invalid ARES mode: {self.mode}")
+        self.profile = resolve_profile(profile or PROFILE, legacy_mode=self.mode)
+        self.roe_policy_path = (roe_policy_path or ROE_POLICY_PATH or "").strip()
+        self.roe = load_roe_policy(self.roe_policy_path)
+        self.authorization_gaps = []
+        self.audit_events = []
         self.session = session
         self.log = log_fn
         self.phase = phase_fn
-        self.emit = emit_fn
+        self.started_at = datetime.now(timezone.utc).isoformat()
+        self.tools_executed = []
+
+        def tracked_emit(event_type: str, data: dict):
+            if event_type == "tool_result":
+                tool_name = data.get("tool")
+                if tool_name and tool_name not in self.tools_executed:
+                    self.tools_executed.append(tool_name)
+            emit_fn(event_type, data)
+
+        self.emit = tracked_emit
         self.validator = ScopeValidator(scope)
 
     def aborted(self):
         return self.session.get("abort", False)
 
+    def authorize_action(self, action: str, target: str = "", method: str = "GET", path: str = "") -> dict:
+        decision = evaluate_capability_action(
+            {"name": action, "target": target or self.target, "method": method, "path": path},
+            self.profile,
+            self.roe,
+            self.validator,
+        )
+        event = {
+            "action": action,
+            "target": target or self.target,
+            "method": method.upper(),
+            "path": path,
+            **decision,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.audit_events.append(event)
+        if not decision["allowed"]:
+            gap = f"capability_blocked:{action}:{decision['matched_rule']}"
+            if gap not in self.authorization_gaps:
+                self.authorization_gaps.append(gap)
+            self.log("WARN", f"Capability blocked [{self.profile.value}] {action}: {decision['reason']}", "orange")
+            self.emit("capability_decision", event)
+        return decision
+
     async def run(self) -> dict:
         osint_data, recon_data, redteam_data = {}, {}, {}
+
+        if self.profile == CapabilityProfile.PASSIVE:
+            self.mode = "passive_only"
+
+        if self.mode == "recon_only":
+            osint_data = await self._build_recon_only_context()
+            self.phase("recon", "active", "Hunting CVEs & misconfigs...")
+            recon_data = await self._run_recon(osint_data)
+            self.emit("results_update", {"phase": "recon", "data": recon_data})
+            self.phase("recon", "done", f"{len(recon_data.get('critical_findings', []))} critical, {len(recon_data.get('high_findings', []))} high")
+            return self._finalize(osint_data, recon_data, {})
 
         # ── Phase 1: OSINT ────────────────────────────────────────────────────
         self.phase("osint", "active", "Gathering intelligence...")
@@ -552,7 +1304,7 @@ class ARESPipeline:
         sub_count = len(osint_data.get("subdomains", [])) + len(osint_data.get("_ct_subdomains", []))
         self.phase("osint", "done", f"{sub_count} subdomains, {osint_data.get('_js_endpoints_count', 0)} JS endpoints")
 
-        if self.aborted() or self.mode == "osint_only":
+        if self.aborted() or self.mode in {"osint_only", "passive_only"}:
             return self._finalize(osint_data, {}, {})
 
         # ── Phase 2: Recon ────────────────────────────────────────────────────
@@ -564,10 +1316,14 @@ class ARESPipeline:
         p1 = recon_data.get("_epss_summary", {}).get("p1_immediate", 0)
         self.phase("recon", "done", f"{crit} critical, {high} high, {p1} P1-immediate CVEs")
 
-        if self.aborted() or self.mode == "recon_only":
+        if self.aborted() or self.mode in {"recon_only", "light_active"}:
             return self._finalize(osint_data, recon_data, {})
 
         # ── Phase 3: Red Team ─────────────────────────────────────────────────
+        redteam_decision = self.authorize_action("advanced_verification", self.target)
+        if not redteam_decision["allowed"]:
+            recon_data.setdefault("coverage_gaps", []).extend(self.authorization_gaps)
+            return self._finalize(osint_data, recon_data, {})
         self.phase("redteam", "active", "Testing + building kill chains...")
         redteam_data = await self._run_redteam(recon_data, osint_data)
         self.emit("results_update", {"phase": "redteam", "data": redteam_data})
@@ -579,6 +1335,10 @@ class ARESPipeline:
 
     def _finalize(self, osint, recon, redteam):
         self.log("ORCH", "Generating assessment report...", "blue")
+        manifest = self._run_manifest(osint, recon, redteam)
+        osint["run_manifest"] = manifest
+        recon["run_manifest"] = manifest
+        redteam["run_manifest"] = manifest
         try:
             reports_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
             report_path = generate_report(
@@ -586,13 +1346,98 @@ class ARESPipeline:
                 osint_report=osint,
                 vuln_report=recon,
                 redteam_report=redteam,
-                output_dir=reports_dir
+                output_dir=reports_dir,
+                run_manifest=manifest,
             )
             self.log("SUCCESS", f"Report saved: {report_path}", "green")
         except Exception as e:
             report_path = None
             self.log("WARN", f"Report generation failed: {e}", "orange")
         return {"osint": osint, "recon": recon, "redteam": redteam, "report_path": report_path}
+
+    def _run_manifest(self, osint: dict, recon: dict, redteam: dict) -> dict:
+        tools = list(dict.fromkeys(self.tools_executed))
+        coverage_gaps = list(dict.fromkeys(
+            list(osint.get("coverage_gaps", []))
+            + list(recon.get("coverage_gaps", []))
+            + list(redteam.get("coverage_gaps", []))
+            + self.authorization_gaps
+        ))
+        external_sources = []
+        if "cert_transparency" in tools:
+            external_sources.append("crt.sh")
+        if "internetdb_lookup" in tools:
+            external_sources.append("Shodan InternetDB")
+        if "cve_lookup" in tools:
+            external_sources.append("NVD/OSV/Vulners CVE sources")
+        if "epss_scoring" in tools:
+            external_sources.append("FIRST EPSS")
+        return {
+            "target": self.target,
+            "scope": {"domains": list(self.scope.domains), "ip_ranges": list(self.scope.ip_ranges)},
+            "mode": self.mode,
+            "profile": profile_summary(self.profile),
+            "roe": {
+                "loaded": self.roe is not None,
+                "policy_path": self.roe.source_path if self.roe else "",
+                "engagement_name": self.roe.name if self.roe else "",
+                "allowed_profiles": self.roe.allowed_profiles if self.roe else [],
+            },
+            "started_at": self.started_at,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "tools_executed": tools,
+            "caps": {
+                "redteam_max_verifications": REDTEAM_MAX_VERIFICATIONS,
+                "recon_additional_target_max": RECON_ADDITIONAL_TARGET_MAX,
+                "external_lookup_timeout_s": EXTERNAL_LOOKUP_TIMEOUT,
+                "tls_timeout_s": TLS_TIMEOUT,
+                "asset_inventory_max_http_probes": ASSET_INVENTORY_MAX_HTTP_PROBES,
+            },
+            "coverage_gaps": coverage_gaps,
+            "external_sources_used": external_sources,
+            "safety_flags": [
+                "authorized-scope-required",
+                "non-destructive-redteam-verification",
+                "raw-secrets-not-persisted",
+                f"nmap-enabled={ENABLE_NMAP}",
+                f"risky-method-checks-enabled={ENABLE_RISKY_METHOD_CHECKS}",
+            ],
+            "capability_audit": self.audit_events,
+        }
+
+    async def _build_recon_only_context(self) -> dict:
+        target = self.target
+        self.log("RECON", "Building recon-only target context", "")
+        probe = await asyncio.to_thread(http_probe, f"https://{target}", self.validator)
+        self.emit("tool_result", {"tool": "http_probe", "data": probe})
+        asset_inventory = build_asset_inventory(
+            target,
+            dns={},
+            subdomains={"discovered_subdomains": []},
+            ct_data={"live_subdomains": [], "interesting_subdomains": []},
+            internetdb={},
+            passive_urls={},
+            js_data={},
+            http_data=probe,
+            validator=self.validator,
+        )
+        return {
+            "summary": f"Recon-only context for {target}. OSINT expansion was skipped by mode policy.",
+            "technology_stack": probe.get("tech_signals", []),
+            "_cpe_strings": probe.get("cpe_strings", []),
+            "_tech_details": probe.get("tech_details", []),
+            "_asset_inventory": asset_inventory,
+            "asset_inventory": asset_inventory,
+            "_js_data": {"endpoints": [], "secrets": [], "forms": [], "pages_crawled": []},
+            "_passive_urls": {"discovered_urls": []},
+            "_external_enrichment": {"internetdb": {}, "reverse_ip": {}},
+            "_ct_subdomains": [],
+            "subdomains": [],
+            "collection_summary": {"http_url": probe.get("url") or f"https://{target}", "http_status": probe.get("status_code")},
+            "coverage_gaps": [],
+            "_missing_security_headers": probe.get("missing_security_headers", []),
+            "_misconfigs": [],
+        }
 
     # ── OSINT Phase ───────────────────────────────────────────────────────────
     async def _run_osint(self) -> dict:
@@ -606,22 +1451,82 @@ class ARESPipeline:
         self.emit("tool_result", {"tool": "dns_lookup", "data": dns_data})
         if self.aborted(): return {}
 
+        internetdb_data = {}
+        resolved_ip = dns_data.get("resolved_ip", "")
+        if resolved_ip:
+            self.log("TOOL", f"internetdb_lookup({resolved_ip})", "dim")
+            internetdb_data = await asyncio.to_thread(internetdb_lookup, resolved_ip)
+            self.log(
+                "OSINT",
+                f"  -> InternetDB {internetdb_data.get('status', 'failed')}: "
+                f"{len(internetdb_data.get('ports', []))} ports, "
+                f"{len(internetdb_data.get('hostnames', []))} hostnames, "
+                f"{len(internetdb_data.get('vulns', []))} vulns, "
+                f"{len(internetdb_data.get('cpes', []))} CPEs",
+                "green" if internetdb_data.get("status") == "success" else "orange",
+            )
+            self.emit("tool_result", {"tool": "internetdb_lookup", "data": internetdb_data})
+        else:
+            internetdb_data = {
+                "ip": "",
+                "ports": [],
+                "hostnames": [],
+                "vulns": [],
+                "cpes": [],
+                "tags": [],
+                "source": "shodan_internetdb",
+                "status": "skipped",
+                "error": "no_resolved_ip",
+            }
+
         # WHOIS
         self.log("TOOL", f"whois_lookup({target})", "dim")
         whois_data = await asyncio.to_thread(whois_lookup, target, self.validator)
         self.emit("tool_result", {"tool": "whois_lookup", "data": whois_data})
         if self.aborted(): return {}
 
-        # Subdomain brute force
-        self.log("TOOL", f"subdomain_enumerate({target}, {len(SUBDOMAIN_WORDLIST)} words)", "dim")
-        subdomain_data = await asyncio.to_thread(
-            subdomain_enumerate, target, SUBDOMAIN_WORDLIST, self.validator
-        )
-        found_subs = subdomain_data.get("discovered_subdomains", [])
-        for sub in found_subs:
-            self.log("OSINT", f"  -> Subdomain: {sub['subdomain']} ({sub['ip']})", "green")
-        self.emit("tool_result", {"tool": "subdomain_enumerate", "data": subdomain_data})
-        if self.aborted(): return {}
+        reverse_ip_data = {
+            "query": resolved_ip or target,
+            "hostnames": [],
+            "ownership_unverified": True,
+            "source": "hackertarget_reverse_ip",
+            "status": "skipped",
+            "error": "disabled",
+        }
+        if ENABLE_REVERSE_IP:
+            reverse_query = resolved_ip or target
+            self.log("TOOL", f"reverse_ip_lookup({reverse_query})", "dim")
+            reverse_ip_data = await asyncio.to_thread(reverse_ip_lookup, reverse_query, self.validator)
+            self.log(
+                "OSINT",
+                f"  -> Reverse IP {reverse_ip_data.get('status', 'failed')}: "
+                f"{len(reverse_ip_data.get('hostnames', []))} hostnames "
+                "(ownership unverified; not added to active scope)",
+                "green" if reverse_ip_data.get("status") == "success" else "orange",
+            )
+            self.emit("tool_result", {"tool": "reverse_ip_lookup", "data": reverse_ip_data})
+
+        if self.mode == "passive_only":
+            subdomain_data = {"discovered_subdomains": [], "status": "skipped", "reason": "passive_only disables brute-force subdomain enumeration"}
+            found_subs = []
+            self.log("OSINT", "  -> Subdomain brute force skipped by passive_only mode", "dim")
+        else:
+            # Subdomain brute force
+            subdomain_wordlist = load_subdomain_wordlist(SUBDOMAIN_WORDLIST_PATH, SUBDOMAIN_WORDLIST_MAX)
+            self.log(
+                "OSINT",
+                f"Loaded {len(subdomain_wordlist)} subdomain candidates from {subdomain_wordlist_source(SUBDOMAIN_WORDLIST_PATH)}",
+                "dim",
+            )
+            self.log("TOOL", f"subdomain_enumerate({target}, {len(subdomain_wordlist)} words)", "dim")
+            subdomain_data = await asyncio.to_thread(
+                subdomain_enumerate, target, subdomain_wordlist, self.validator
+            )
+            found_subs = subdomain_data.get("discovered_subdomains", [])
+            for sub in found_subs:
+                self.log("OSINT", f"  -> Subdomain: {sub['subdomain']} ({sub['ip']})", "green")
+            self.emit("tool_result", {"tool": "subdomain_enumerate", "data": subdomain_data})
+            if self.aborted(): return {}
 
         # ── Certificate Transparency (NEW) ────────────────────────────────────
         self.log("TOOL", f"cert_transparency_recon({target})", "dim")
@@ -638,6 +1543,57 @@ class ARESPipeline:
             self.log("WARN", f"CT recon failed: {e}", "orange")
             ct_data = {}
         if self.aborted(): return {}
+
+        if self.mode == "passive_only":
+            passive_url_data = {
+                "robots": {"status": "skipped", "allow": [], "disallow": []},
+                "sitemaps": {"status": "skipped", "urls": [], "child_sitemaps": []},
+                "security_txt": {"status": "skipped", "status_code": 0, "fields": {}},
+                "discovered_urls": [],
+                "suggested_dorks": [
+                    f"site:{target}",
+                    f"site:{target} filetype:js",
+                    f"site:{target} inurl:admin OR inurl:login",
+                ],
+                "coverage": {"passive_http_allowed": PASSIVE_HTTP_ALLOWED, "status": "skipped"},
+            }
+            if PASSIVE_HTTP_ALLOWED:
+                passive_seed_url = f"https://{target}"
+                self.log("TOOL", f"passive_url_discovery({passive_seed_url}) [passive_only]", "dim")
+                passive_url_data = await asyncio.to_thread(passive_url_discovery, passive_seed_url, self.validator)
+                self.emit("tool_result", {"tool": "passive_url_discovery", "data": passive_url_data})
+            http_data = {"url": f"https://{target}", "status": "skipped", "tech_signals": [], "cpe_strings": [], "tech_details": [], "missing_security_headers": []}
+            misconfig_data = {"findings": [], "restricted_findings": [], "budget_exhausted": False, "status": "skipped"}
+            js_data = {"endpoints": [], "secrets": [], "internal_hosts": [], "cloud_resources": [], "script_count": 0, "forms": [], "pages_crawled": []}
+            secret_queue = []
+            osint_report = _ground_osint_report(
+                target, dns_data, whois_data, subdomain_data, http_data, misconfig_data, ct_data, js_data, {},
+                {"internetdb": internetdb_data, "reverse_ip": reverse_ip_data},
+                passive_url_data,
+                secret_queue,
+            )
+            asset_inventory = build_asset_inventory(
+                target, dns_data, subdomain_data, ct_data, internetdb_data, passive_url_data, js_data, http_data, self.validator
+            )
+            osint_report.update({
+                "_cpe_strings": list(internetdb_data.get("cpes", [])),
+                "_tech_details": [],
+                "_external_enrichment": {"internetdb": internetdb_data, "reverse_ip": reverse_ip_data},
+                "_org_osint": whois_data.get("org_osint", {}),
+                "_passive_urls": passive_url_data,
+                "_suggested_dorks": passive_url_data.get("suggested_dorks", []),
+                "_ct_data": ct_data,
+                "_ct_subdomains": ct_data.get("live_subdomains", []),
+                "_js_data": js_data,
+                "_secret_verification_queue": secret_queue,
+                "_asset_inventory": asset_inventory,
+                "asset_inventory": asset_inventory,
+                "_js_endpoints_count": 0,
+                "_misconfigs": [],
+                "_missing_security_headers": [],
+            })
+            self.log("SUCCESS", f"OSINT passive-only complete — CT names: {ct_data.get('total_unique', 0)}, risk score: {osint_report.get('risk_score', '?')}/10", "green")
+            return osint_report
 
         # HTTP probe
         self.log("TOOL", f"http_probe(https://{target})", "dim")
@@ -657,8 +1613,37 @@ class ARESPipeline:
         self.emit("tool_result", {"tool": "http_probe", "data": http_data})
         if self.aborted(): return {}
 
+        # Passive URL Discovery
+        passive_seed_url = http_data.get("url") or f"https://{target}"
+        self.log("TOOL", f"passive_url_discovery({passive_seed_url})", "dim")
+        try:
+            passive_url_data = await asyncio.to_thread(
+                passive_url_discovery, passive_seed_url, self.validator
+            )
+            robots = passive_url_data.get("robots", {})
+            sitemaps = passive_url_data.get("sitemaps", {})
+            security_txt = passive_url_data.get("security_txt", {})
+            security_state = "present" if security_txt.get("status_code") == 200 else "missing"
+            self.log(
+                "OSINT",
+                f"  -> Passive URLs: robots allow={len(robots.get('allow', []))}, "
+                f"disallow={len(robots.get('disallow', []))}; "
+                f"sitemap URLs={len(sitemaps.get('urls', []))}; "
+                f"security.txt {security_state}; "
+                f"dorks={len(passive_url_data.get('suggested_dorks', []))} manual-review suggestions",
+                "green",
+            )
+            self.emit("tool_result", {"tool": "passive_url_discovery", "data": passive_url_data})
+        except Exception as e:
+            self.log("WARN", f"Passive URL discovery failed: {e}", "orange")
+            passive_url_data = {}
+        if self.aborted(): return {}
+
         # ── JS Intelligence (NEW) ─────────────────────────────────────────────
         js_seed_url = http_data.get("url") or f"https://{target}"
+        js_fallback_urls = list(dict.fromkeys(
+            list(http_data.get("candidate_urls", [])) + list(passive_url_data.get("discovered_urls", []))
+        ))
         self.log("TOOL", f"js_intelligence({js_seed_url})", "dim")
         self.log("OSINT", "  -> Extracting endpoints/secrets from JavaScript...", "")
         try:
@@ -667,8 +1652,10 @@ class ARESPipeline:
                 js_seed_url,
                 self.validator,
                 seed_html=http_data.get("body_preview", ""),
-                fallback_urls=http_data.get("candidate_urls", []),
+                fallback_urls=js_fallback_urls,
             )
+            js_data = _sanitize_js_data(js_data)
+            secret_queue = build_secret_verification_queue(js_data)
             ep_count = len(js_data.get("endpoints", []))
             sec_count = len(js_data.get("secrets", []))
             page_count = len(js_data.get("pages_crawled", []))
@@ -691,7 +1678,38 @@ class ARESPipeline:
         except Exception as e:
             self.log("WARN", f"JS intelligence failed: {e}", "orange")
             js_data = {}
+            secret_queue = []
         if self.aborted(): return {}
+
+        asset_inventory = build_asset_inventory(
+            target,
+            dns_data,
+            subdomain_data,
+            ct_data,
+            internetdb_data,
+            passive_url_data,
+            js_data,
+            http_data,
+            self.validator,
+        )
+        probe_assets = select_inventory_http_probe_targets(asset_inventory)
+        if probe_assets:
+            self.log("OSINT", f"  -> Asset inventory: probing {len(probe_assets)} high-priority in-scope hosts", "orange")
+        for asset in probe_assets:
+            if self.aborted(): return {}
+            self.log("TOOL", f"http_probe({asset['url']}) [asset:{asset['source']}]", "dim")
+            try:
+                probe = await asyncio.to_thread(http_probe, asset["url"], self.validator)
+                asset["http_probe"] = probe
+                asset["tech_stack"] = list(dict.fromkeys(asset.get("tech_stack", []) + probe.get("tech_signals", [])))
+                asset["cpe_strings"] = list(dict.fromkeys(asset.get("cpe_strings", []) + probe.get("cpe_strings", [])))
+                if probe.get("missing_security_headers"):
+                    asset["risk_hints"] = list(dict.fromkeys(asset.get("risk_hints", []) + ["missing security headers"]))
+                asset["notable_findings_count"] = len(asset.get("risk_hints", []))
+                self.emit("tool_result", {"tool": "asset_http_probe", "asset_id": asset["asset_id"], "data": probe})
+            except Exception as e:
+                asset.setdefault("http_probe", {})["error"] = str(e)
+        asset_inventory = _merge_inventory_assets(asset_inventory)
 
         # Misconfigs
         misconfig_seed_url = http_data.get("url") or f"https://{target}"
@@ -715,15 +1733,33 @@ class ARESPipeline:
         # AI synthesis
         self.log("OSINT", "Synthesizing intelligence with AI...", "")
         osint_report = await self._ai_synthesize_osint(
-            target, dns_data, whois_data, subdomain_data, http_data, misconfig_data, ct_data, js_data
+            target, dns_data, whois_data, subdomain_data, http_data, misconfig_data, ct_data, js_data,
+            {"internetdb": internetdb_data, "reverse_ip": reverse_ip_data},
+            passive_url_data,
+            secret_queue,
         )
 
         # Attach raw data for downstream phases
-        osint_report["_cpe_strings"] = http_data.get("cpe_strings", [])
+        osint_report["_cpe_strings"] = list(dict.fromkeys(
+            list(http_data.get("cpe_strings", [])) + list(internetdb_data.get("cpes", []))
+        ))
         osint_report["_tech_details"] = http_data.get("tech_details", [])
+        osint_report["_external_enrichment"] = {"internetdb": internetdb_data, "reverse_ip": reverse_ip_data}
+        osint_report["_org_osint"] = whois_data.get("org_osint", {
+            "organization": "",
+            "registrar": "",
+            "emails": [],
+            "abuse_emails": [],
+            "source": "whois",
+        })
+        osint_report["_passive_urls"] = passive_url_data
+        osint_report["_suggested_dorks"] = passive_url_data.get("suggested_dorks", [])
         osint_report["_ct_data"] = ct_data
         osint_report["_ct_subdomains"] = ct_data.get("live_subdomains", [])
         osint_report["_js_data"] = js_data
+        osint_report["_secret_verification_queue"] = secret_queue
+        osint_report["_asset_inventory"] = asset_inventory
+        osint_report["asset_inventory"] = asset_inventory
         osint_report["_js_endpoints_count"] = len(js_data.get("endpoints", []))
         osint_report["_misconfigs"] = misconfig_data.get("findings", [])
         osint_report["_missing_security_headers"] = http_data.get("missing_security_headers", [])
@@ -734,12 +1770,17 @@ class ARESPipeline:
             f"risk score: {osint_report.get('risk_score', '?')}/10", "green")
         return osint_report
 
-    async def _ai_synthesize_osint(self, target, dns, whois, subdomains, http, misconfigs, ct_data, js_data) -> dict:
+    async def _ai_synthesize_osint(self, target, dns, whois, subdomains, http, misconfigs, ct_data, js_data, external_enrichment=None, passive_urls=None, secret_verification_queue=None) -> dict:
+        external_enrichment = external_enrichment or {}
+        internetdb = external_enrichment.get("internetdb", {})
+        reverse_ip = external_enrichment.get("reverse_ip", {})
+        passive_urls = passive_urls or {}
         ct_interesting = [s["subdomain"] for s in ct_data.get("interesting_subdomains", [])]
         raw_data = {
             "dns": dns.get("records", {}),
             "resolved_ip": dns.get("resolved_ip", ""),
             "whois": whois.get("fields", {}),
+            "whois_org_osint": redact_org_osint(whois.get("org_osint", {})),
             "subdomains_brute": [s["subdomain"] for s in subdomains.get("discovered_subdomains", [])],
             "ct_interesting_subdomains": ct_interesting,
             "ct_total_found": ct_data.get("total_unique", 0),
@@ -747,10 +1788,32 @@ class ARESPipeline:
             "powered_by_header": http.get("powered_by_header", ""),
             "tech_signals": http.get("tech_signals", []),
             "cpe_strings": http.get("cpe_strings", []),
+            "internetdb": {
+                "status": internetdb.get("status"),
+                "ports": internetdb.get("ports", []),
+                "hostnames": internetdb.get("hostnames", []),
+                "vulns": internetdb.get("vulns", []),
+                "cpes": internetdb.get("cpes", []),
+            },
+            "reverse_ip": {
+                "status": reverse_ip.get("status"),
+                "hostnames_count": len(reverse_ip.get("hostnames", [])),
+                "ownership_unverified": reverse_ip.get("ownership_unverified", True),
+            },
             "js_endpoints_found": len(js_data.get("endpoints", [])),
             "js_secrets_found": len(js_data.get("secrets", [])),
+            "secret_verification_queue": secret_verification_queue or [],
             "js_internal_hosts": js_data.get("internal_hosts", []),
             "js_cloud_resources": [r["value"] for r in js_data.get("cloud_resources", [])],
+            "passive_url_discovery": {
+                "robots_status": passive_urls.get("robots", {}).get("status_code", 0),
+                "robots_allow_count": len(passive_urls.get("robots", {}).get("allow", [])),
+                "robots_disallow_count": len(passive_urls.get("robots", {}).get("disallow", [])),
+                "sitemap_url_count": len(passive_urls.get("sitemaps", {}).get("urls", [])),
+                "security_txt_status": passive_urls.get("security_txt", {}).get("status_code", 0),
+                "discovered_url_count": len(passive_urls.get("discovered_urls", [])),
+                "suggested_dorks_count": len(passive_urls.get("suggested_dorks", [])),
+            },
             "missing_security_headers": http.get("missing_security_headers", []),
             "misconfigs_found": misconfigs.get("findings", []),
             "http_status": http.get("status_code"),
@@ -789,11 +1852,11 @@ Return ONLY valid JSON — no markdown, no preamble:
             cleaned = _clean_json(text)
             if not cleaned:
                 raise ValueError(f"No JSON in response. Raw: {text[:300]!r}")
-            return _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_data, js_data, json.loads(cleaned))
+            return _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_data, js_data, json.loads(cleaned), external_enrichment, passive_urls, secret_verification_queue)
         except Exception as ex:
             self.log("WARN", f"AI synthesis failed: {ex}", "orange")
 
-        return _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_data, js_data, {})
+        return _ground_osint_report(target, dns, whois, subdomains, http, misconfigs, ct_data, js_data, {}, external_enrichment, passive_urls, secret_verification_queue)
 
     # ── Recon Phase ───────────────────────────────────────────────────────────
     async def _run_recon(self, osint_data: dict) -> dict:
@@ -801,30 +1864,191 @@ Return ONLY valid JSON — no markdown, no preamble:
         self.log("RECON", "Initializing CVE & vulnerability hunter", "")
         await asyncio.sleep(0.1)
 
-        # Port scan
-        self.log("TOOL", f"port_scan({target}, common ports)", "dim")
-        try:
-            port_data = await asyncio.to_thread(
-                port_scan, target,
-                "21,22,23,25,80,443,3000,3306,5432,6379,8080,8443,9200,27017",
-                self.validator
-            )
-            for p in port_data.get("open_ports", []):
-                self.log("RECON", f"  -> {p}", "orange")
-            self.emit("tool_result", {"tool": "port_scan", "data": port_data})
-        except Exception as e:
-            self.log("WARN", f"Port scan failed: {e}", "orange")
-            port_data = {"open_ports": []}
+        port_scan_decision = self.authorize_action("port_scan", target)
+        if ENABLE_NMAP and self.mode not in {"passive_only", "light_active"} and port_scan_decision["allowed"]:
+            self.log("TOOL", f"port_scan({target}, common ports)", "dim")
+            try:
+                port_data = await asyncio.to_thread(
+                    port_scan, target,
+                    "21,22,23,25,80,443,3000,3306,5432,6379,8080,8443,9200,27017",
+                    self.validator
+                )
+                for p in port_data.get("open_ports", []):
+                    self.log("RECON", f"  -> {p}", "orange")
+                self.emit("tool_result", {"tool": "port_scan", "data": port_data})
+            except Exception as e:
+                self.log("WARN", f"Port scan failed: {e}", "orange")
+                port_data = {"open_ports": []}
+        else:
+            port_data = {"open_ports": [], "detected_tech": [], "service_inventory": [], "status": "skipped", "reason": f"mode={self.mode}, enable_nmap={ENABLE_NMAP}"}
+            self.log("RECON", "  -> Port scan skipped by mode/config policy", "dim")
         if self.aborted(): return {}
+
+        # Version disclosure and framework exposure
+        version_seed_url = osint_data.get("collection_summary", {}).get("http_url") or f"https://{target}"
+        self.log("TOOL", f"probe_version_disclosure({version_seed_url})", "dim")
+        try:
+            version_data = await asyncio.to_thread(probe_version_disclosure, version_seed_url, self.validator)
+            coverage = version_data.get("coverage", {})
+            self.log(
+                "RECON",
+                f"  -> Version disclosure: {coverage.get('exposed', 0)} exposed, "
+                f"{coverage.get('protected', 0)} protected, {coverage.get('absent', 0)} absent",
+                "orange" if coverage.get("exposed", 0) else "green",
+            )
+            self.emit("tool_result", {"tool": "probe_version_disclosure", "data": version_data})
+        except Exception as e:
+            self.log("WARN", f"Version disclosure probe failed: {e}", "orange")
+            version_data = {"base_url": version_seed_url, "paths": [], "findings": [], "coverage": {"error": str(e)}}
+        osint_data["_version_disclosure"] = version_data
+        if self.aborted(): return {}
+
+        additional_targets = build_additional_recon_targets(
+            target,
+            osint_data,
+            max_targets=RECON_ADDITIONAL_TARGET_MAX,
+            validator=self.validator,
+        )
+        additional_results = {
+            "targets": additional_targets,
+            "probes": [],
+            "coverage": {"targets_total": len(additional_targets), "probed": 0, "failed": 0},
+        }
+        additional_cpes = []
+        version_bases_seen = set()
+        if additional_targets:
+            self.log("RECON", f"  -> Additional HTTP targets from OSINT: {len(additional_targets)}", "orange")
+        for item in additional_targets:
+            if self.aborted(): return {}
+            self.log("TOOL", f"http_probe({item['url']}) [additional:{item['source']}]", "dim")
+            try:
+                probe = await asyncio.to_thread(http_probe, item["url"], self.validator)
+                for cpe in probe.get("cpe_strings", []):
+                    if cpe not in additional_cpes:
+                        additional_cpes.append(cpe)
+                entry = {
+                    **item,
+                    "status_code": probe.get("status_code", 0),
+                    "tech_signals": probe.get("tech_signals", []),
+                    "missing_headers": probe.get("missing_security_headers", []),
+                    "cpe_strings": probe.get("cpe_strings", []),
+                    "error": probe.get("error", ""),
+                }
+                if item["priority"] <= 3:
+                    base = _base_url_for_target(target, {"collection_summary": {"http_url": item["url"]}})
+                    if base not in version_bases_seen:
+                        version_bases_seen.add(base)
+                        try:
+                            entry["version_disclosure"] = await asyncio.to_thread(
+                                probe_version_disclosure, base, self.validator
+                            )
+                        except Exception as ex:
+                            entry["version_disclosure"] = {"base_url": base, "paths": [], "findings": [], "coverage": {"error": str(ex)}}
+                additional_results["probes"].append(entry)
+                additional_results["coverage"]["probed"] += 1
+            except Exception as e:
+                additional_results["coverage"]["failed"] += 1
+                additional_results["probes"].append({**item, "status_code": 0, "tech_signals": [], "missing_headers": [], "cpe_strings": [], "error": str(e)})
+        osint_data["_additional_targets"] = additional_results
+        asset_inventory = merge_additional_recon_into_inventory(
+            osint_data.get("_asset_inventory") or osint_data.get("asset_inventory", []),
+            additional_results,
+            self.validator,
+        )
+        osint_data["_asset_inventory"] = asset_inventory
+        osint_data["asset_inventory"] = asset_inventory
+
+        tls_seed_url = version_seed_url if version_seed_url.startswith("https://") else f"https://{target}"
+        self.log("TOOL", f"tls_audit({tls_seed_url})", "dim")
+        try:
+            tls_data = await asyncio.to_thread(tls_audit, tls_seed_url, self.validator)
+            self.log(
+                "RECON",
+                f"  -> TLS: {len(tls_data.get('findings', []))} findings, "
+                f"selected {tls_data.get('selected_tls_version', 'unknown') or 'unknown'}",
+                "orange" if tls_data.get("findings") else "green",
+            )
+            self.emit("tool_result", {"tool": "tls_audit", "data": tls_data})
+        except Exception as e:
+            self.log("WARN", f"TLS audit failed: {e}", "orange")
+            tls_data = {"target": target, "port": 443, "certificate": {}, "protocols": {}, "selected_cipher": "", "findings": [], "coverage": {"error": str(e)}}
+
+        additional_tls = []
+        tls_seen = {_recon_url_key(tls_seed_url)}
+        for item in additional_targets:
+            if len(additional_tls) >= TLS_ADDITIONAL_TARGET_MAX:
+                break
+            if item.get("priority", 99) > 3 or not item.get("url", "").startswith("https://"):
+                continue
+            base = _base_url_for_target(target, {"collection_summary": {"http_url": item["url"]}})
+            key = _recon_url_key(base)
+            if key in tls_seen:
+                continue
+            tls_seen.add(key)
+            try:
+                additional_tls.append(await asyncio.to_thread(tls_audit, base, self.validator))
+            except Exception as ex:
+                additional_tls.append({"target": urllib.parse.urlparse(base).hostname or base, "port": 443, "certificate": {}, "protocols": {}, "selected_cipher": "", "findings": [], "coverage": {"error": str(ex)}})
+        if additional_tls:
+            tls_data["additional"] = additional_tls
+        osint_data["_tls_audit"] = tls_data
 
         # CVE lookups
         cve_results = []
+        cve_source_coverage = []
         cpe_strings = list(osint_data.get("_cpe_strings", []))
         tech_stack = list(osint_data.get("technology_stack", []))
-        port_cpes = [
-            t["cpe"] for t in port_data.get("detected_tech", [])
-            if isinstance(t, dict) and t.get("cpe")
-        ]
+        per_asset_recon = {}
+        cpe_to_assets: dict[str, list[str]] = {}
+        for asset in osint_data.get("_asset_inventory", []) or []:
+            asset_id = asset.get("asset_id", "")
+            if not asset_id:
+                continue
+            per_asset_recon[asset_id] = {
+                "host": asset.get("host", ""),
+                "url": asset.get("url", ""),
+                "source": asset.get("source", ""),
+                "priority": asset.get("priority", 9),
+                "tech_stack": asset.get("tech_stack", []),
+                "cpe_strings": asset.get("cpe_strings", []),
+                "cve_queries": [],
+                "cve_count": 0,
+            }
+            for cpe in asset.get("cpe_strings", []) or []:
+                cpe_to_assets.setdefault(cpe, []).append(asset_id)
+                if cpe not in cpe_strings:
+                    cpe_strings.append(cpe)
+            for tech in asset.get("tech_stack", []) or []:
+                if tech not in tech_stack:
+                    tech_stack.append(tech)
+        service_inventory = port_data.get("service_inventory", [])
+        service_cpes = []
+        for service in service_inventory:
+            for cpe in service.get("candidate_cpes", []):
+                if cpe not in service_cpes:
+                    service_cpes.append(cpe)
+            product = service.get("product", "")
+            version = service.get("version", "")
+            if product:
+                label = f"{product} {version}".strip()
+                if label not in tech_stack:
+                    tech_stack.append(label)
+        port_cpes = []
+        if not service_cpes:
+            port_cpes = [
+                t["cpe"] for t in port_data.get("detected_tech", [])
+                if isinstance(t, dict) and t.get("cpe")
+            ]
+        if service_cpes:
+            for cpe in service_cpes:
+                if cpe not in cpe_strings:
+                    cpe_strings.append(cpe)
+            self.log("RECON", f"  -> Reusing {len(service_cpes)} structured service CPE candidates", "orange")
+        if additional_cpes:
+            for cpe in additional_cpes:
+                if cpe not in cpe_strings:
+                    cpe_strings.append(cpe)
+            self.log("RECON", f"  -> Reusing {len(additional_cpes)} CPEs from additional HTTP targets", "orange")
         if port_cpes:
             for cpe in port_cpes:
                 if cpe not in cpe_strings:
@@ -835,6 +2059,8 @@ Return ONLY valid JSON — no markdown, no preamble:
                     tech_stack.append(name)
             osint_data["technology_stack"] = tech_stack
             self.log("RECON", f"  -> Reusing {len(port_cpes)} service fingerprints from port scan", "orange")
+        elif service_inventory:
+            osint_data["technology_stack"] = tech_stack
 
         skip_cve_lookup = not cpe_strings and not tech_stack
         if skip_cve_lookup:
@@ -854,6 +2080,11 @@ Return ONLY valid JSON — no markdown, no preamble:
                     if total > 0:
                         self.log("RECON", f"  -> {total} CVEs found for {cpe}", "orange")
                     cve_results.extend(cves.get("vulnerabilities", [])[:4])
+                    for asset_id in cpe_to_assets.get(cpe, []):
+                        per_asset_recon.setdefault(asset_id, {"cve_queries": [], "cve_count": 0})
+                        per_asset_recon[asset_id]["cve_queries"].append(cpe)
+                        per_asset_recon[asset_id]["cve_count"] += len(cves.get("vulnerabilities", []))
+                    cve_source_coverage.append({"query": cpe, "coverage": cves.get("coverage", {})})
                     self.emit("tool_result", {"tool": "cve_lookup", "cpe": cpe, "data": cves})
                 except Exception as e:
                     self.log("WARN", f"CVE lookup failed for {cpe}: {e}", "orange")
@@ -868,6 +2099,7 @@ Return ONLY valid JSON — no markdown, no preamble:
                     if cves.get("total", 0) > 0:
                         self.log("RECON", f"  -> {cves['total']} CVEs for {tech}", "orange")
                     cve_results.extend(cves.get("vulnerabilities", [])[:4])
+                    cve_source_coverage.append({"query": cpe, "coverage": cves.get("coverage", {})})
                     self.emit("tool_result", {"tool": "cve_lookup", "tech": tech, "data": cves})
                 except Exception as e:
                     self.log("WARN", f"CVE lookup failed for {tech}: {e}", "orange")
@@ -908,9 +2140,23 @@ Return ONLY valid JSON — no markdown, no preamble:
         vuln_report["critical_findings"] = map_to_mitre(vuln_report.get("critical_findings", []))
         vuln_report["medium_findings"] = map_to_mitre(vuln_report.get("medium_findings", []))
         vuln_report["cve_matches"] = cve_results
+        vuln_report["_version_disclosure"] = version_data
+        vuln_report["version_disclosure"] = version_data
+        vuln_report["_additional_targets"] = additional_results
+        vuln_report["additional_targets"] = additional_results
+        vuln_report["_tls_audit"] = tls_data
+        vuln_report["tls_audit"] = tls_data
         vuln_report["_epss_summary"] = epss_sum
         vuln_report["_open_ports"] = port_data.get("open_ports", [])
+        vuln_report["_service_inventory"] = port_data.get("service_inventory", [])
         vuln_report["_service_fingerprints"] = port_data.get("detected_tech", [])
+        vuln_report["_cve_source_coverage"] = cve_source_coverage
+        vuln_report["_per_asset_recon"] = per_asset_recon
+        vuln_report["per_asset_recon"] = per_asset_recon
+        for asset in osint_data.get("_asset_inventory", []) or []:
+            recon_entry = per_asset_recon.get(asset.get("asset_id", ""), {})
+            asset["notable_findings_count"] = asset.get("notable_findings_count", 0) + recon_entry.get("cve_count", 0)
+        vuln_report["asset_inventory"] = osint_data.get("_asset_inventory", [])
 
         total = (len(vuln_report.get("critical_findings", [])) +
                  len(vuln_report.get("high_findings", [])) +
@@ -974,14 +2220,27 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
         await asyncio.sleep(0.1)
 
         test_results = []
+        verification_assets = sorted(
+            [
+                asset for asset in (vuln_data.get("asset_inventory") or osint_data.get("_asset_inventory", []) or [])
+                if asset.get("in_scope") and asset.get("url")
+            ],
+            key=lambda item: (item.get("priority", 9), -len(item.get("cpe_strings", [])), item.get("host", "")),
+        )
+        verification_url = verification_assets[0]["url"] if verification_assets else f"https://{target}"
+        valid_verification_url, _ = self.validator.validate(verification_url)
+        if not valid_verification_url:
+            verification_url = f"https://{target}"
         findings_to_test = list(vuln_data.get("critical_findings", [])) + list(vuln_data.get("high_findings", []))
         for finding in vuln_data.get("medium_findings", []):
             title = finding.get("title", "").lower()
-            if any(marker in title for marker in ["missing security headers", "cors", "exposed path"]):
+            if any(marker in title for marker in ["missing security headers", "cors", "exposed path", "clickjacking", "open redirect", "http method", "tls"]):
                 findings_to_test.append(finding)
-        findings_to_test = findings_to_test[:3]
+        findings_to_test = findings_to_test[:REDTEAM_MAX_VERIFICATIONS]
 
         for finding in findings_to_test:
+            if len(test_results) >= REDTEAM_MAX_VERIFICATIONS:
+                break
             if self.aborted(): break
             name = finding.get("title", "Unknown")
             self.log("TOOL", f"test_vulnerability({name[:50]})", "dim")
@@ -989,28 +2248,44 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
             try:
                 if "exposed path" in name.lower():
                     result = await asyncio.to_thread(
-                        _test_exposed_path, f"https://{target}", finding, self.validator
+                        _test_exposed_path, verification_url, finding, self.validator
                     )
                     test_results.append({"test": "exposed_path", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "exposed_path_test", "data": result})
                 elif any(kw in name.lower() for kw in ["cred", "auth", "admin", "login"]):
                     result = await asyncio.to_thread(
-                        _test_default_creds, f"https://{target}", self.validator
+                        discover_auth_panels, verification_url, self.validator
                     )
-                    test_results.append({"test": "default_credentials", "finding": name, "result": result})
-                    self.emit("tool_result", {"tool": "default_creds", "data": result})
+                    test_results.append({"test": "auth_panel_discovery", "finding": name, "result": result})
+                    self.emit("tool_result", {"tool": "auth_panel_discovery", "data": result})
                 elif "cors" in name.lower():
                     result = await asyncio.to_thread(
-                        _test_cors, f"https://{target}", self.validator
+                        _test_cors, verification_url, self.validator
                     )
                     test_results.append({"test": "cors", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "cors_test", "data": result})
                 elif "missing security headers" in name.lower():
                     result = await asyncio.to_thread(
-                        _test_missing_security_headers, f"https://{target}", finding, self.validator
+                        _test_missing_security_headers, verification_url, finding, self.validator
                     )
                     test_results.append({"test": "missing_security_headers", "finding": name, "result": result})
                     self.emit("tool_result", {"tool": "missing_header_test", "data": result})
+                elif "open redirect" in name.lower() or "redirect" in name.lower():
+                    result = await asyncio.to_thread(test_open_redirect, verification_url, self.validator)
+                    test_results.append({"test": "open_redirect", "finding": name, "result": result})
+                    self.emit("tool_result", {"tool": "open_redirect", "data": result})
+                elif "method" in name.lower() or "trace" in name.lower():
+                    result = await asyncio.to_thread(test_http_methods, verification_url, self.validator)
+                    test_results.append({"test": "http_methods", "finding": name, "result": result})
+                    self.emit("tool_result", {"tool": "http_methods", "data": result})
+                elif "clickjack" in name.lower() or "frame" in name.lower():
+                    result = await asyncio.to_thread(test_clickjacking, verification_url, self.validator)
+                    test_results.append({"test": "clickjacking", "finding": name, "result": result})
+                    self.emit("tool_result", {"tool": "clickjacking", "data": result})
+                elif "host header" in name.lower():
+                    result = await asyncio.to_thread(test_host_header_injection, verification_url, self.validator)
+                    test_results.append({"test": "host_header_injection", "finding": name, "result": result})
+                    self.emit("tool_result", {"tool": "host_header_injection", "data": result})
                 else:
                     self.log("REDTEAM", f"  -> Passive check: {name[:50]}", "")
                     await asyncio.sleep(0.5)
@@ -1019,6 +2294,14 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
                     })
             except Exception as e:
                 self.log("WARN", f"  -> Test error: {e}", "orange")
+
+        for item in vuln_data.get("_additional_targets", {}).get("targets", []):
+            if len(test_results) >= REDTEAM_MAX_VERIFICATIONS:
+                break
+            if item.get("priority", 99) <= 3:
+                result = await asyncio.to_thread(enumerate_api_endpoints, item["url"], self.validator)
+                test_results.append({"test": "api_endpoint_discovery", "finding": item.get("reason", "additional target"), "result": result})
+                self.emit("tool_result", {"tool": "api_endpoint_discovery", "data": result})
 
         # ── Attack Graph + Kill Chains (NEW) ──────────────────────────────────
         self.log("REDTEAM", "Building attack graph...", "red")
@@ -1029,7 +2312,8 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
                 osint_data,
                 vuln_data,
                 osint_data.get("_ct_data", {}),
-                osint_data.get("_js_data", {})
+                osint_data.get("_js_data", {}),
+                test_results,
             )
             self.log("REDTEAM", f"  -> Graph: {len(graph.nodes)} nodes, {len(graph.get_critical_paths())} critical paths", "red")
 
@@ -1088,6 +2372,7 @@ CVEs (with EPSS):
 TEST RESULTS: {json.dumps(test_results, indent=2)}
 
 Rules:
+- For each CONFIRMED or evidence-backed vulnerability from the recon phase, attempt verification using at least one relevant non-destructive tool before writing the final redteam report. Do not attempt credentials, destructive writes, exploitation, or out-of-scope requests.
 - overall_risk must be >= {risk_floor}
 - Reference EPSS scores and kill chains in summary
 - Only recommend actions directly supported by provided evidence; never invent unseen products or version numbers
@@ -1151,22 +2436,8 @@ Return ONLY valid JSON:
 
 
 # ── Test helpers ──────────────────────────────────────────────────────────────
-def _test_default_creds(url: str, scope: ScopeValidator) -> dict:
-    import urllib.request, ssl
-    scope.assert_in_scope(url)
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    found = []
-    for path in ["/admin", "/admin/login", "/login", "/wp-admin"]:
-        try:
-            req = urllib.request.Request(url.rstrip("/") + path, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
-                if resp.status == 200:
-                    found.append(path)
-        except Exception:
-            pass
-    return {"accessible_panels": found, "default_creds_required_manual_test": True}
+def _discover_auth_panels(url: str, scope: ScopeValidator) -> dict:
+    return discover_auth_panels(url, scope)
 
 
 def _test_cors(url: str, scope: ScopeValidator) -> dict:

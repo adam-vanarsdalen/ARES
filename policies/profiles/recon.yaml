@@ -1,0 +1,10 @@
+profile: recon
+description: "Standard authorized recon and vulnerability enrichment."
+settings:
+  http_probe_enabled: true
+  tls_audit_enabled: true
+  version_disclosure_enabled: true
+  cve_enrichment_enabled: true
+  nmap_enabled: true
+  redteam_enabled: false
+  risky_methods_enabled: false

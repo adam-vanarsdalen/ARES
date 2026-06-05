@@ -1,0 +1,6 @@
+profile: custom
+description: "Operator-defined profile using full Rules of Engagement."
+requires:
+  roe: true
+settings:
+  inherit_from_roe: true

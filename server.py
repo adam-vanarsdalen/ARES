@@ -30,6 +30,7 @@ from sse_starlette.sse import EventSourceResponse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils.scope_validator import Scope, ScopeValidator
+from utils.capability_profiles import resolve_profile
 from pipeline import ARESPipeline
 from ollama_compat import check_ollama
 from utils.auth import APIKeyMiddleware
@@ -39,7 +40,9 @@ from utils.config import (
     API_KEY,
     ENV,
     EVENT_QUEUE_SIZE,
+    ENABLE_MANUAL_SECRET_VERIFY,
     OLLAMA_MODEL,
+    PROFILE,
     PRUNE_INTERVAL,
     SESSION_TTL,
     as_dict as config_dict,
@@ -57,6 +60,7 @@ SESSION_TTL_SECONDS = SESSION_TTL
 SESSION_PRUNE_INTERVAL_SECONDS = PRUNE_INTERVAL
 _QUEUE_SIZE = EVENT_QUEUE_SIZE
 _allowed_origins = ALLOWED_ORIGINS
+VALID_MODES = {"full", "osint_only", "passive_only", "light_active", "recon_only"}
 
 # ── Session store ─────────────────────────────────────────────────────────────
 event_queues: dict[str, asyncio.Queue] = {}
@@ -164,6 +168,8 @@ class AssessmentRequest(BaseModel):
     domains: Annotated[list[str], Field(default_factory=list, max_length=50)]
     ip_ranges: Annotated[list[str], Field(default_factory=list, max_length=20)]
     mode: str = "full"  # full | osint_only | recon_only
+    profile: str | None = None
+    roe_policy_path: str | None = Field(default=None, max_length=1024)
 
 
 class AssessmentSession(BaseModel):
@@ -171,6 +177,11 @@ class AssessmentSession(BaseModel):
     status: str
     target: str
     created_at: str
+
+
+class ManualSecretVerifyRequest(BaseModel):
+    type: str = "API Key"
+    secret_value: str = Field(min_length=1, max_length=4096)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -185,6 +196,13 @@ def normalize_target(value: str) -> str:
 
 def format_sse_event(event_type: str, data: dict) -> dict:
     return {"event": event_type, "data": json.dumps(data)}
+
+
+def _redacted_secret_preview(value: str) -> str:
+    value = str(value or "")
+    if len(value) <= 8:
+        return value[:2] + "..." if value else ""
+    return value[:4] + "..." + value[-4:]
 
 
 def push_event(session_id: str, event_type: str, data: dict):
@@ -264,10 +282,17 @@ async def start_assessment(req: AssessmentRequest):
     target = normalize_target(req.target)
     domains = [normalize_target(domain) for domain in req.domains if normalize_target(domain)]
     ip_ranges = [ip_range.strip() for ip_range in req.ip_ranges if ip_range.strip()]
-    mode = req.mode.strip()
+    mode = req.mode.strip().lower()
+    try:
+        profile = resolve_profile(req.profile or PROFILE, legacy_mode=mode).value
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    roe_policy_path = (req.roe_policy_path or "").strip()
 
     if not target:
         raise HTTPException(400, "Target is required")
+    if mode not in VALID_MODES:
+        raise HTTPException(400, f"Invalid mode. Expected one of: {', '.join(sorted(VALID_MODES))}")
 
     try:
         ipaddress.ip_address(target)
@@ -295,6 +320,8 @@ async def start_assessment(req: AssessmentRequest):
             target=target,
             scope=scope,
             mode=mode,
+            profile=profile,
+            roe_policy_path=roe_policy_path,
         )
     )
     _pipeline_tasks[session_id] = task
@@ -409,6 +436,19 @@ async def stop_assessment(session_id: str):
     return {"status": "stopped", "session_id": session_id}
 
 
+@app.post("/manual/verify-secret")
+async def manual_verify_secret(req: ManualSecretVerifyRequest):
+    if not ENABLE_MANUAL_SECRET_VERIFY:
+        raise HTTPException(404, "Manual secret verification is disabled")
+    return {
+        "type": req.type,
+        "value_preview": _redacted_secret_preview(req.secret_value),
+        "not_persisted": True,
+        "manual_only": True,
+        "real_provider_calls": False,
+    }
+
+
 @app.get("/assess")
 async def list_sessions():
     recent = list_recent_sessions(limit=20)
@@ -436,7 +476,14 @@ class SessionState(dict):
         return super().get(key, default)
 
 
-async def run_pipeline_background(session_id: str, target: str, scope: Scope, mode: str):
+async def run_pipeline_background(
+    session_id: str,
+    target: str,
+    scope: Scope,
+    mode: str,
+    profile: str | None = None,
+    roe_policy_path: str = "",
+):
     session = SessionState(session_id)
 
     def emit(event_type: str, data: dict):
@@ -450,12 +497,14 @@ async def run_pipeline_background(session_id: str, target: str, scope: Scope, mo
 
     try:
         log("ORCH", f"ARES assessment initialized — target: {target}", "blue")
-        log("ORCH", f"Mode: {mode.upper()} | Scope domains: {len(scope.domains)}", "blue")
+        log("ORCH", f"Mode: {mode.upper()} | Profile: {(profile or 'recon').upper()} | Scope domains: {len(scope.domains)}", "blue")
 
         pipeline = ARESPipeline(
             target=target,
             scope=scope,
             mode=mode,
+            profile=profile,
+            roe_policy_path=roe_policy_path,
             session=session,
             log_fn=log,
             phase_fn=phase_update,

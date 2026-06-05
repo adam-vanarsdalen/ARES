@@ -1,0 +1,11 @@
+profile: advanced
+description: "Serious non-destructive verification under explicit RoE."
+requires:
+  roe: true
+  operator_confirmation: true
+settings:
+  advanced_verification_enabled: true
+  redteam_enabled: true
+  nuclei_profile: moderate
+  risky_methods_enabled: false
+  put_delete_requires_path_allowlist: true

@@ -1,0 +1,7 @@
+profile: lab
+description: "Local/demo exploit simulation only."
+requires:
+  local_or_lab_target: true
+settings:
+  lab_exploit_simulation_enabled: true
+  external_targets_forbidden: true

@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import pipeline
+from utils.roe import parse_roe_policy
 from utils.scope_validator import Scope
 
 
@@ -47,10 +48,12 @@ class TestPipelineLLMUnavailable(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(pipeline, "dns_lookup", return_value={"domain": "example.com", "records": {}, "resolved_ip": "93.184.216.34"}),
+            patch.object(pipeline, "internetdb_lookup", return_value={"ip": "93.184.216.34", "ports": [], "hostnames": [], "vulns": [], "cpes": [], "tags": [], "source": "shodan_internetdb", "status": "no_data", "error": ""}),
             patch.object(pipeline, "whois_lookup", return_value={"domain": "example.com", "fields": {"Registrant Organization": "Example Org"}}),
             patch.object(pipeline, "subdomain_enumerate", return_value={"discovered_subdomains": []}),
             patch.object(pipeline, "cert_transparency_recon", return_value={"total_unique": 0, "interesting_subdomains": [], "live_subdomains": [], "live_count": 0}),
             patch.object(pipeline, "http_probe", return_value={"status_code": 200, "tech_signals": [], "cpe_strings": [], "missing_security_headers": ["Content-Security-Policy"], "security_headers": {}, "error": ""}),
+            patch.object(pipeline, "passive_url_discovery", return_value={"robots": {"allow": [], "disallow": [], "urls": []}, "sitemaps": {"urls": [], "child_sitemaps": []}, "security_txt": {"status_code": 0, "fields": {}}, "discovered_urls": [], "suggested_dorks": [], "coverage": {}}),
             patch.object(pipeline, "js_intelligence", return_value={"endpoints": [], "secrets": [], "internal_hosts": [], "cloud_resources": [], "script_count": 0}),
             patch.object(pipeline, "check_common_misconfigs", return_value={"findings": [], "budget_exhausted": False, "paths_checked": 0, "paths_total": 33}),
             patch.object(pipeline.client.messages, "create", side_effect=ValueError("Ollama call failed: down")),
@@ -67,16 +70,30 @@ class TestPipelineLLMUnavailable(unittest.IsolatedAsyncioTestCase):
 
     async def test_full_pipeline_ai_failures_use_grounded_fallbacks(self):
         p = self._make_pipeline(mode="full")
+        p.profile = pipeline.CapabilityProfile.ADVANCED
+        p.roe = parse_roe_policy({
+            "engagement": {
+                "allowed_profiles": ["advanced"],
+                "allowed_methods": ["GET", "HEAD", "OPTIONS"],
+                "advanced_verification": True,
+            }
+        })
 
         with (
+            patch("utils.roe.ENABLE_ADVANCED_VERIFICATION", True),
+            patch("utils.roe.REQUIRE_ROE_FOR_ADVANCED", True),
             patch.object(pipeline, "dns_lookup", return_value={"domain": "example.com", "records": {}, "resolved_ip": "93.184.216.34"}),
+            patch.object(pipeline, "internetdb_lookup", return_value={"ip": "93.184.216.34", "ports": [], "hostnames": [], "vulns": [], "cpes": [], "tags": [], "source": "shodan_internetdb", "status": "no_data", "error": ""}),
             patch.object(pipeline, "whois_lookup", return_value={"domain": "example.com", "fields": {"Registrant Organization": "Example Org"}}),
             patch.object(pipeline, "subdomain_enumerate", return_value={"discovered_subdomains": []}),
             patch.object(pipeline, "cert_transparency_recon", return_value={"total_unique": 0, "interesting_subdomains": [], "live_subdomains": [], "live_count": 0}),
             patch.object(pipeline, "http_probe", return_value={"status_code": 200, "tech_signals": [], "cpe_strings": [], "missing_security_headers": [], "security_headers": {}, "error": "timeout"}),
+            patch.object(pipeline, "passive_url_discovery", return_value={"robots": {"allow": [], "disallow": [], "urls": []}, "sitemaps": {"urls": [], "child_sitemaps": []}, "security_txt": {"status_code": 0, "fields": {}}, "discovered_urls": [], "suggested_dorks": [], "coverage": {}}),
             patch.object(pipeline, "js_intelligence", return_value={"endpoints": [], "secrets": [], "internal_hosts": [], "cloud_resources": [], "script_count": 0}),
             patch.object(pipeline, "check_common_misconfigs", return_value={"findings": [], "budget_exhausted": True, "paths_checked": 10, "paths_total": 33}),
             patch.object(pipeline, "port_scan", return_value={"open_ports": [], "error": "nmap unavailable"}),
+            patch.object(pipeline, "probe_version_disclosure", return_value={"base_url": "https://example.com", "paths": [], "findings": [], "coverage": {"paths_total": 18, "exposed": 0, "protected": 0, "absent": 18}}),
+            patch.object(pipeline, "tls_audit", return_value={"target": "example.com", "port": 443, "certificate": {}, "protocols": {}, "selected_cipher": "", "findings": [], "coverage": {}}),
             patch.object(pipeline, "fetch_cve_data", return_value={"total": 0, "vulnerabilities": []}),
             patch.object(pipeline, "build_attack_graph", return_value=_Graph()),
             patch.object(pipeline, "generate_kill_chains", return_value={"kill_chains": [], "worst_case_scenario": "", "overall_chain_risk": "LOW"}),

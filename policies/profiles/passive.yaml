@@ -1,0 +1,8 @@
+profile: passive
+description: "Minimal external intelligence collection."
+settings:
+  passive_http_allowed: false
+  nmap_enabled: false
+  redteam_enabled: false
+  nuclei_enabled: false
+  lab_simulation_enabled: false
