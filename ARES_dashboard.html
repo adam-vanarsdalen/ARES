@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARES — Autonomous Recon & Exploitation System</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --black: #080b0f; --deep: #0d1117; --panel: #111820;
+      --border: #1e2d3d; --border2: #243447;
+      --green: #00ff88; --green2: #00cc66; --green-dim: #00ff8833;
+      --green-glow: 0 0 20px #00ff8855;
+      --red: #ff3355; --red-dim: #ff335522;
+      --orange: #ff8800; --orange-dim: #ff880022;
+      --blue: #00aaff; --blue-dim: #00aaff22;
+      --text: #c8d8e8; --text-dim: #6a8090; --text-bright: #e8f4ff;
+      --mono: 'Share Tech Mono', monospace; --sans: 'Rajdhani', sans-serif;
+    }
+    body { background: var(--black); color: var(--text); font-family: var(--sans); overflow-x: hidden; }
+    body::before {
+      content: ''; position: fixed; inset: 0;
+      background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+      pointer-events: none; z-index: 9999;
+    }
+    .app { min-height: 100vh; display: flex; flex-direction: column; }
+    .header { border-bottom: 1px solid var(--border); padding: 0 32px; height: 56px; display: flex; align-items: center; justify-content: space-between; background: var(--deep); position: sticky; top: 0; z-index: 100; }
+    .header-logo { display: flex; align-items: center; gap: 12px; }
+    .logo-icon { width: 32px; height: 32px; border: 1.5px solid var(--green); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 11px; color: var(--green); box-shadow: var(--green-glow), inset 0 0 10px #00ff8822; clip-path: polygon(10% 0%, 90% 0%, 100% 10%, 100% 90%, 90% 100%, 10% 100%, 0% 90%, 0% 10%); }
+    .logo-text { font-family: var(--sans); font-weight: 700; font-size: 20px; letter-spacing: 6px; color: var(--text-bright); animation: glitch 8s infinite; }
+    .logo-sub { font-family: var(--mono); font-size: 10px; color: var(--text-dim); letter-spacing: 2px; margin-top: -2px; }
+    .header-status { display: flex; align-items: center; gap: 20px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
+    .status-item { display: flex; align-items: center; gap: 6px; }
+    .server-dot { width: 6px; height: 6px; border-radius: 50%; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    @keyframes glitch { 0%,95%,100%{text-shadow:none;transform:none} 96%{text-shadow:2px 0 var(--red),-2px 0 var(--green);transform:skewX(1deg)} 97%{text-shadow:-2px 0 var(--blue),2px 0 var(--orange);transform:skewX(-1deg)} 98%{text-shadow:none;transform:none} }
+    @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+    @keyframes borderPulse { 0%,100%{box-shadow:none} 50%{box-shadow:0 0 10px var(--orange)} }
+    @keyframes slide { 0%{transform:translateX(-150%)} 100%{transform:translateX(350%)} }
+    .main { display: flex; flex: 1; height: calc(100vh - 56px); overflow: hidden; }
+    .sidebar { width: 300px; min-width: 300px; border-right: 1px solid var(--border); background: var(--deep); display: flex; flex-direction: column; overflow-y: auto; }
+    .sidebar::-webkit-scrollbar { width: 3px; }
+    .sidebar::-webkit-scrollbar-thumb { background: var(--border2); }
+    .section-label { font-family: var(--mono); font-size: 10px; letter-spacing: 3px; color: var(--text-dim); padding: 16px 16px 8px; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+    .input-group { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .input-label { font-family: var(--mono); font-size: 10px; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 6px; display: block; }
+    .input-field { width: 100%; background: var(--panel); border: 1px solid var(--border2); color: var(--green); font-family: var(--mono); font-size: 12px; padding: 8px 10px; outline: none; transition: border-color .2s, box-shadow .2s; }
+    .input-field:focus { border-color: var(--green); box-shadow: 0 0 0 1px var(--green2), inset 0 0 8px #00ff8811; }
+    .input-field::placeholder { color: var(--text-dim); }
+    textarea.input-field { resize: vertical; min-height: 70px; }
+    .mode-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .mode-btn { background: var(--panel); border: 1px solid var(--border2); color: var(--text-dim); font-family: var(--mono); font-size: 9px; letter-spacing: 1px; padding: 8px 4px; cursor: pointer; text-align: center; transition: all .2s; text-transform: uppercase; }
+    .mode-btn:hover { border-color: var(--green2); color: var(--green2); }
+    .mode-btn.active { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+    .launch-btn { margin: 16px; background: transparent; border: 1.5px solid var(--green); color: var(--green); font-family: var(--sans); font-weight: 700; font-size: 14px; letter-spacing: 4px; padding: 12px; cursor: pointer; text-transform: uppercase; transition: all .2s; position: relative; overflow: hidden; clip-path: polygon(8px 0%, 100% 0%, calc(100% - 8px) 100%, 0% 100%); }
+    .launch-btn::before { content: ''; position: absolute; inset: 0; background: var(--green); transform: translateX(-101%); transition: transform .3s; }
+    .launch-btn:hover::before { transform: translateX(0); }
+    .launch-btn:hover { color: var(--black); }
+    .launch-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .launch-btn:disabled::before { display: none; }
+    .launch-btn span { position: relative; z-index: 1; }
+    .stop-btn { margin: 0 16px 16px; background: transparent; border: 1.5px solid var(--red); color: var(--red); font-family: var(--sans); font-weight: 600; font-size: 12px; letter-spacing: 3px; padding: 8px; cursor: pointer; text-transform: uppercase; transition: all .2s; width: calc(100% - 32px); }
+    .stop-btn:hover { background: var(--red-dim); }
+    .phase-list { padding: 8px 0; }
+    .phase-item { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 11px; }
+    .phase-icon { width: 28px; height: 28px; border: 1px solid var(--border2); display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; }
+    .phase-icon.done { border-color: var(--green); color: var(--green); box-shadow: 0 0 8px #00ff8833; }
+    .phase-icon.active { border-color: var(--orange); color: var(--orange); animation: borderPulse 1s infinite; }
+    .phase-icon.idle { border-color: var(--border2); color: var(--text-dim); }
+    .phase-info { flex: 1; min-width: 0; }
+    .phase-name { color: var(--text-bright); font-weight: 500; letter-spacing: 1px; }
+    .phase-detail { color: var(--text-dim); font-size: 10px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .phase-badge { font-size: 9px; padding: 2px 6px; letter-spacing: 1px; border: 1px solid; }
+    .badge-done { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+    .badge-active { border-color: var(--orange); color: var(--orange); background: var(--orange-dim); }
+    .badge-idle { border-color: var(--border2); color: var(--text-dim); }
+    .risk-meter { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .risk-label { font-family: var(--mono); font-size: 10px; color: var(--text-dim); letter-spacing: 2px; margin-bottom: 8px; }
+    .risk-bar-bg { height: 6px; background: var(--panel); border: 1px solid var(--border2); }
+    .risk-bar-fill { height: 100%; transition: width 1s, background .5s; }
+    .risk-value { font-family: var(--mono); font-size: 18px; font-weight: 700; margin-top: 6px; }
+    .center { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .terminal-header { height: 40px; border-bottom: 1px solid var(--border); display: flex; align-items: center; background: var(--deep); flex-shrink: 0; }
+    .tab { height: 100%; padding: 0 20px; display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: 1px; color: var(--text-dim); border-right: 1px solid var(--border); cursor: pointer; transition: all .15s; text-transform: uppercase; }
+    .tab.active { color: var(--green); background: var(--green-dim); border-bottom: 2px solid var(--green); }
+    .tab:hover:not(.active) { color: var(--text); background: var(--panel); }
+    .tab-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .terminal { flex: 1; overflow-y: auto; padding: 16px; font-family: var(--mono); font-size: 12px; line-height: 1.7; background: var(--black); }
+    .terminal::-webkit-scrollbar { width: 4px; }
+    .terminal::-webkit-scrollbar-track { background: var(--deep); }
+    .terminal::-webkit-scrollbar-thumb { background: var(--border2); }
+    .log-line { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 4px; }
+    .log-time { color: var(--text-dim); flex-shrink: 0; font-size: 10px; padding-top: 2px; }
+    .log-tag { flex-shrink: 0; font-size: 9px; padding: 1px 5px; border: 1px solid; margin-top: 2px; letter-spacing: 1px; min-width: 58px; text-align: center; }
+    .tag-ORCH { border-color: var(--blue); color: var(--blue); background: var(--blue-dim); }
+    .tag-OSINT { border-color: #cc88ff; color: #cc88ff; background: #cc88ff22; }
+    .tag-RECON { border-color: var(--orange); color: var(--orange); background: var(--orange-dim); }
+    .tag-REDTEAM { border-color: var(--red); color: var(--red); background: var(--red-dim); }
+    .tag-TOOL { border-color: var(--text-dim); color: var(--text-dim); }
+    .tag-SUCCESS { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+    .tag-WARN { border-color: var(--orange); color: var(--orange); }
+    .tag-INFO { border-color: var(--text-dim); color: var(--text-dim); }
+    .log-msg { flex: 1; color: var(--text); }
+    .log-msg.green { color: var(--green); }
+    .log-msg.red { color: var(--red); }
+    .log-msg.orange { color: var(--orange); }
+    .log-msg.blue { color: var(--blue); }
+    .log-msg.dim { color: var(--text-dim); }
+    .cursor-blink { display: inline-block; width: 8px; height: 14px; background: var(--green); animation: blink .8s infinite; vertical-align: text-bottom; margin-left: 2px; }
+    .progress-bar { height: 2px; background: var(--border); overflow: hidden; flex-shrink: 0; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, var(--green2), var(--green), #88ffcc); transition: width .5s; box-shadow: 0 0 8px var(--green); }
+    .progress-fill.indeterminate { width: 40% !important; animation: slide 1.5s infinite ease-in-out; }
+    .results-panel { width: 320px; min-width: 320px; border-left: 1px solid var(--border); background: var(--deep); display: flex; flex-direction: column; overflow-y: auto; }
+    .results-panel::-webkit-scrollbar { width: 3px; }
+    .results-panel::-webkit-scrollbar-thumb { background: var(--border2); }
+    .result-card { margin: 12px; border: 1px solid var(--border2); background: var(--panel); }
+    .result-card-header { padding: 8px 12px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 10px; letter-spacing: 2px; color: var(--text-dim); display: flex; justify-content: space-between; align-items: center; }
+    .result-card-body { padding: 10px 12px; }
+    .finding { padding: 8px 10px; border-left: 2px solid; margin-bottom: 8px; background: var(--deep); }
+    .finding.critical { border-color: var(--red); }
+    .finding.high { border-color: var(--orange); }
+    .finding.medium { border-color: #ffcc00; }
+    .finding-title { font-family: var(--sans); font-weight: 600; letter-spacing: 1px; font-size: 13px; margin-bottom: 3px; }
+    .finding.critical .finding-title { color: var(--red); }
+    .finding.high .finding-title { color: var(--orange); }
+    .finding.medium .finding-title { color: #ffcc00; }
+    .finding-desc { color: var(--text-dim); font-family: var(--mono); font-size: 10px; line-height: 1.5; }
+    .stat-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 11px; }
+    .stat-row:last-child { border: none; }
+    .stat-key { color: var(--text-dim); }
+    .stat-val { color: var(--text-bright); }
+    .stat-val.green { color: var(--green); }
+    .stat-val.red { color: var(--red); }
+    .stat-val.orange { color: var(--orange); }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 4px; }
+    .tech-tag { font-family: var(--mono); font-size: 9px; padding: 2px 7px; border: 1px solid var(--border2); color: var(--text-dim); letter-spacing: 1px; }
+    .empty-state { padding: 40px 20px; text-align: center; font-family: var(--mono); font-size: 11px; color: var(--text-dim); line-height: 2; }
+    .empty-icon { font-size: 32px; opacity: .3; margin-bottom: 12px; }
+    .server-banner { margin: 12px; padding: 10px 12px; border: 1px solid; font-family: var(--mono); font-size: 10px; line-height: 1.6; white-space: pre-line; }
+    .server-banner.connected { border-color: var(--green); background: var(--green-dim); color: var(--green); }
+    .server-banner.disconnected { border-color: var(--red); background: var(--red-dim); color: var(--red); }
+    .server-banner.checking { border-color: var(--orange); background: var(--orange-dim); color: var(--orange); }
+    .download-btn { margin: 8px 12px; padding: 10px; background: var(--green-dim); border: 1px solid var(--green); color: var(--green); font-family: var(--sans); font-weight: 600; font-size: 12px; letter-spacing: 3px; cursor: pointer; text-align: center; text-transform: uppercase; transition: all .2s; display: block; text-decoration: none; }
+    .download-btn:hover { background: var(--green); color: var(--black); }
+    pre.ascii { color: var(--green); font-family: var(--mono); font-size: 11px; line-height: 1.3; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const API_CANDIDATES = (() => {
+  const fromQuery = new URLSearchParams(window.location.search).get("api");
+  const localDefaults = ["http://127.0.0.1:8001", "http://localhost:8001"];
+  if (fromQuery) return [fromQuery, ...localDefaults.filter(x => x !== fromQuery)];
+
+  if (window.location.protocol === "file:") return localDefaults;
+
+  const sameHost = `${window.location.protocol}//${window.location.hostname}:8001`;
+  return [sameHost, ...localDefaults.filter(x => x !== sameHost)];
+})();
+
+const nowTime = () => new Date().toTimeString().slice(0, 8);
+
+function LogLine({ entry }) {
+  return (
+    <div className="log-line">
+      <span className="log-time">{entry.time}</span>
+      <span className={`log-tag tag-${entry.tag}`}>{entry.tag}</span>
+      <span className={`log-msg ${entry.color || ""}`}>{entry.msg}</span>
+    </div>
+  );
+}
+
+function PhaseItem({ icon, name, detail, status }) {
+  return (
+    <div className="phase-item">
+      <div className={`phase-icon ${status}`}>{icon}</div>
+      <div className="phase-info">
+        <div className="phase-name">{name}</div>
+        <div className="phase-detail">{detail}</div>
+      </div>
+      <div className={`phase-badge badge-${status}`}>
+        {status === "done" ? "✓" : status === "active" ? "RUN" : "IDLE"}
+      </div>
+    </div>
+  );
+}
+
+function RiskMeter({ label }) {
+  const colors = { CRITICAL: "#ff3355", HIGH: "#ff8800", MEDIUM: "#ffcc00", LOW: "#00ff88", "—": "#6a8090" };
+  const widths = { CRITICAL: 95, HIGH: 72, MEDIUM: 45, LOW: 20, "—": 0 };
+  const color = colors[label] || "#6a8090";
+  return (
+    <div className="risk-meter">
+      <div className="risk-label">OVERALL RISK</div>
+      <div className="risk-bar-bg">
+        <div className="risk-bar-fill" style={{ width: (widths[label] || 0) + "%", background: color }} />
+      </div>
+      <div className="risk-value" style={{ color }}>{label}</div>
+    </div>
+  );
+}
+
+function App() {
+  const [target, setTarget] = useState("");
+  const [domains, setDomains] = useState("");
+  const [ipRanges, setIpRanges] = useState("");
+  const [mode, setMode] = useState("full");
+  const [tab, setTab] = useState("terminal");
+  const [running, setRunning] = useState(false);
+  const [done, setDone] = useState(false);
+  const [logs, setLogs] = useState([]);
+  const [health, setHealth] = useState(null);
+  const [apiBase, setApiBase] = useState(API_CANDIDATES[0]);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("aresApiKey") || "dev-insecure");
+  const [phases, setPhases] = useState({ osint: "idle", recon: "idle", redteam: "idle" });
+  const [phaseDetail, setPhaseDetail] = useState({ osint: "Awaiting launch", recon: "Awaiting OSINT", redteam: "Awaiting recon" });
+  const [results, setResults] = useState({});
+  const [riskLevel, setRiskLevel] = useState("—");
+  const [progress, setProgress] = useState(0);
+  const [serverStatus, setServerStatus] = useState("checking");
+  const [sessionId, setSessionId] = useState(null);
+  const [sessionTarget, setSessionTarget] = useState("");
+  const [reportPath, setReportPath] = useState("");
+  const termRef = useRef();
+  const esRef = useRef(null);
+  const apiBaseRef = useRef(API_CANDIDATES[0]);
+
+  const authHeaders = useCallback((extra = {}) => {
+    const key = apiKey.trim();
+    return key ? { ...extra, "X-ARES-Key": key } : extra;
+  }, [apiKey]);
+
+  useEffect(() => {
+    if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
+  }, [logs]);
+
+  useEffect(() => {
+    localStorage.setItem("aresApiKey", apiKey);
+  }, [apiKey]);
+
+  useEffect(() => {
+    checkServer();
+    const interval = setInterval(checkServer, 30000);
+    return () => clearInterval(interval);
+  }, [apiKey]);
+
+  const checkServer = async () => {
+    for (const candidate of API_CANDIDATES) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        const res = await fetch(`${candidate}/health`, { signal: controller.signal, headers: authHeaders() });
+        clearTimeout(timer);
+        const data = await res.json().catch(() => null);
+        setHealth(data);
+        apiBaseRef.current = candidate;
+        setApiBase(candidate);
+        setServerStatus(res.ok ? "connected" : "disconnected");
+        if (res.ok) return;
+      } catch {}
+    }
+    setServerStatus("disconnected");
+    setHealth(null);
+  };
+
+  const addLog = useCallback((tag, msg, color = "") => {
+    setLogs(prev => [...prev, { time: nowTime(), tag, msg, color, id: Math.random() }]);
+  }, []);
+
+  const handleLaunch = async () => {
+    const cleanTarget = target.trim();
+    if (!cleanTarget) return;
+    if (esRef.current) { esRef.current.close(); esRef.current = null; }
+
+    setRunning(true); setDone(false); setLogs([]); setResults({});
+    setRiskLevel("—"); setProgress(5);
+    setPhases({ osint: "idle", recon: "idle", redteam: "idle" });
+    setPhaseDetail({ osint: "Starting...", recon: "Waiting", redteam: "Waiting" });
+    setReportPath("");
+
+    const targetHost = cleanTarget.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+    const isIpTarget = /^(\d{1,3}\.){3}\d{1,3}$/.test(targetHost);
+    const scopeDomains = domains.trim()
+      ? domains.split("\n").map(d => d.trim()).filter(Boolean)
+      : (isIpTarget ? [] : [targetHost, `*.${targetHost}`]);
+    const scopeIpRanges = ipRanges.trim()
+      ? ipRanges.split("\n").map(r => r.trim()).filter(Boolean)
+      : [];
+
+    try {
+      const res = await fetch(`${apiBaseRef.current}/assess`, {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ target: cleanTarget, domains: scopeDomains, ip_ranges: scopeIpRanges, mode })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        addLog("WARN", `Server error: ${err.detail || err.message || "Unknown error"}`, "red");
+        setRunning(false); return;
+      }
+
+      const session = await res.json();
+      setSessionId(session.session_id);
+      setSessionTarget(session.target || cleanTarget);
+      addLog("ORCH", `Session started: ${session.session_id.slice(0, 8)}...`, "blue");
+
+      startStream(session.session_id);
+
+    } catch (err) {
+      addLog("WARN", `Connection failed: ${err.message}`, "red");
+      setRunning(false);
+    }
+  };
+
+  const handleStreamEvent = useCallback((eventName, payload) => {
+    if (eventName === "connected") {
+      addLog("ORCH", "Connected to ARES pipeline", "blue");
+      return;
+    }
+    if (eventName === "log") {
+      addLog(payload.tag, payload.msg, payload.color || "");
+      return;
+    }
+    if (eventName === "phase") {
+      setPhases(prev => ({ ...prev, [payload.phase]: payload.status }));
+      if (payload.detail) setPhaseDetail(prev => ({ ...prev, [payload.phase]: payload.detail }));
+      if (payload.phase === "osint" && payload.status === "done") setProgress(33);
+      if (payload.phase === "recon" && payload.status === "done") setProgress(66);
+      if (payload.phase === "redteam" && payload.status === "done") setProgress(100);
+      if (payload.status === "active") setProgress({ osint: 10, recon: 40, redteam: 70 }[payload.phase] || 10);
+      return;
+    }
+    if (eventName === "results_update") {
+      setResults(prev => ({ ...prev, [payload.phase]: payload.data }));
+      if (payload.phase === "redteam" && payload.data?.overall_risk) setRiskLevel(payload.data.overall_risk);
+      return;
+    }
+    if (eventName === "complete") {
+      setRiskLevel(payload.risk || "UNKNOWN");
+      setReportPath(payload.report_path || "");
+      setProgress(100);
+      setRunning(false);
+      setDone(true);
+      if (esRef.current) esRef.current.close();
+      return;
+    }
+    if (eventName === "stopped") {
+      setRunning(false);
+      if (esRef.current) esRef.current.close();
+      return;
+    }
+    if (eventName === "error") {
+      addLog("WARN", payload.message || "Pipeline error", "red");
+      setRunning(false);
+      setDone(true);
+    }
+  }, [addLog]);
+
+  const startStream = useCallback(async (sid) => {
+    const controller = new AbortController();
+    esRef.current = { close: () => controller.abort() };
+    try {
+      const res = await fetch(`${apiBaseRef.current}/assess/${sid}/stream`, {
+        headers: authHeaders(),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        addLog("WARN", `Stream error: HTTP ${res.status}`, "red");
+        setRunning(false);
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done: streamDone } = await reader.read();
+        if (streamDone) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split(/\r?\n\r?\n/);
+        buffer = chunks.pop() || "";
+        for (const chunk of chunks) {
+          let eventName = "message";
+          let dataText = "";
+          for (const line of chunk.split(/\r?\n/)) {
+            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+            if (line.startsWith("data:")) dataText += line.slice(5).trim();
+          }
+          if (!dataText) continue;
+          try {
+            handleStreamEvent(eventName, JSON.parse(dataText));
+          } catch (err) {
+            addLog("WARN", `Stream parse error: ${err.message}`, "red");
+          }
+        }
+      }
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        addLog("WARN", `Stream disconnected: ${err.message}`, "red");
+        setRunning(false);
+      }
+    }
+  }, [addLog, authHeaders, handleStreamEvent]);
+
+  const handleStop = async () => {
+    if (sessionId) {
+      try { await fetch(`${apiBaseRef.current}/assess/${sessionId}/stop`, { method: "POST", headers: authHeaders() }); } catch {}
+    }
+    if (esRef.current) { esRef.current.close(); esRef.current = null; }
+    addLog("WARN", "Assessment stopped by operator", "orange");
+    setRunning(false);
+  };
+
+  const findings = [
+    ...(results.recon?.critical_findings || []).map(f => ({ ...f, sev: "critical" })),
+    ...(results.recon?.high_findings || []).map(f => ({ ...f, sev: "high" })),
+    ...(results.recon?.medium_findings || []).map(f => ({ ...f, sev: "medium" })),
+  ];
+
+  const serverColor = serverStatus === "connected" ? "var(--green)" : serverStatus === "checking" ? "var(--orange)" : "var(--red)";
+  const deps = health?.dependencies || {};
+  const missingDeps = ["dig", "whois", "nmap"].filter(k => deps[k] === false);
+  const offlineMode = health?.config?.offline;
+
+  return (
+    <div className="app">
+      <header className="header">
+        <div className="header-logo">
+          <div className="logo-icon">⬡</div>
+          <div>
+            <div className="logo-text">ARES</div>
+            <div className="logo-sub">AUTONOMOUS RECON & EXPLOITATION SYSTEM</div>
+          </div>
+        </div>
+        <div className="header-status">
+          <div className="status-item">
+            <div className="server-dot" style={{ background: serverColor, boxShadow: `0 0 8px ${serverColor}` }} />
+            SERVER {serverStatus.toUpperCase()}
+          </div>
+          <div className="status-item"><div className="status-dot" />ONLINE</div>
+          <div className="status-item" style={{ color: running ? "var(--orange)" : done ? "var(--green)" : "var(--text-dim)" }}>
+            {running ? "◉ RUNNING" : done ? "◉ COMPLETE" : "◎ STANDBY"}
+          </div>
+        </div>
+      </header>
+
+      <div className="main">
+        <aside className="sidebar">
+          <div className="section-label">Engagement Config</div>
+
+          {serverStatus !== "connected" && (
+            <div className={`server-banner ${serverStatus}`}>
+              {serverStatus === "checking"
+                ? "⟳ Connecting to ARES server..."
+                : "✗ Server offline\nRun: uvicorn server:app --reload --host 0.0.0.0 --port 8001"}
+            </div>
+          )}
+          {serverStatus === "connected" && (missingDeps.length > 0 || offlineMode) && (
+            <div className="server-banner checking">
+              {offlineMode ? "⚠ ARES_OFFLINE=1 (network + LLM disabled)" : "⚠ Optional tools missing"}
+              {missingDeps.length > 0 ? `\nMissing: ${missingDeps.join(", ")} (some recon features limited)` : ""}
+            </div>
+          )}
+
+          <div className="input-group">
+            <label className="input-label">API KEY</label>
+            <input className="input-field" type="password" placeholder="X-ARES-Key" value={apiKey} onChange={e => setApiKey(e.target.value)} disabled={running} />
+          </div>
+
+          <div className="input-group">
+            <label className="input-label">TARGET</label>
+            <input className="input-field" placeholder="example.com" value={target} onChange={e => setTarget(e.target.value)} disabled={running} />
+          </div>
+
+          <div className="input-group">
+            <label className="input-label">AUTHORIZED SCOPE (one per line)</label>
+            <textarea className="input-field" placeholder={"example.com\n*.example.com"} value={domains} onChange={e => setDomains(e.target.value)} disabled={running} rows={3} />
+          </div>
+
+          <div className="input-group">
+            <label className="input-label">AUTHORIZED IP RANGES</label>
+            <textarea className="input-field" placeholder={"127.0.0.1/32\n10.0.0.0/24"} value={ipRanges} onChange={e => setIpRanges(e.target.value)} disabled={running} rows={2} />
+          </div>
+
+          <div className="section-label">Mode</div>
+          <div className="mode-grid">
+            {["full", "osint_only", "recon_only"].map(m => (
+              <button key={m} className={`mode-btn ${mode === m ? "active" : ""}`} onClick={() => setMode(m)} disabled={running}>
+                {m === "full" ? "FULL" : m === "osint_only" ? "OSINT" : "RECON"}
+              </button>
+            ))}
+          </div>
+
+          <button className="launch-btn" onClick={handleLaunch} disabled={running || !target.trim() || serverStatus !== "connected"}>
+            <span>{running ? "RUNNING..." : "LAUNCH ARES"}</span>
+          </button>
+          {running && <button className="stop-btn" onClick={handleStop}>■ ABORT</button>}
+
+          <div className="section-label">Pipeline Status</div>
+          <div className="phase-list">
+            <PhaseItem icon="◈" name="OSINT AGENT" detail={phaseDetail.osint} status={phases.osint} />
+            <PhaseItem icon="⬡" name="RECON AGENT" detail={phaseDetail.recon} status={phases.recon} />
+            <PhaseItem icon="◉" name="RED TEAM AGENT" detail={phaseDetail.redteam} status={phases.redteam} />
+          </div>
+
+          <RiskMeter label={riskLevel} />
+
+          {results.osint && (
+            <>
+              <div className="section-label">Infrastructure</div>
+              <div style={{ padding: "8px 0" }}>
+                {[
+                  ["HOSTING", results.osint.infrastructure?.hosting || "—", ""],
+                  ["CDN", results.osint.infrastructure?.cdn || "None", ""],
+                  ["SUBDOMAINS", results.osint.subdomains?.length || 0, "green"],
+                  ["OPEN PORTS", results.osint.open_ports?.length || 0, "orange"],
+                ].map(([k, v, c]) => (
+                  <div key={k} className="stat-row" style={{ padding: "5px 16px" }}>
+                    <span className="stat-key">{k}</span>
+                    <span className={`stat-val ${c}`}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {sessionId && done && (
+            <a className="download-btn" href={`${apiBase}/assess/${sessionId}/report`} download>
+              ↓ DOWNLOAD REPORT
+            </a>
+          )}
+        </aside>
+
+        <main className="center">
+          <div className="terminal-header">
+            {["terminal", "results", "report"].map(t => (
+              <div key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
+                <div className="tab-dot" />{t.toUpperCase()}
+              </div>
+            ))}
+            <div style={{ flex: 1 }} />
+            <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", paddingRight: 16 }}>
+              {logs.length} EVENTS{sessionId ? ` · ${sessionId.slice(0, 8)}` : ""}
+            </div>
+          </div>
+
+          <div className="progress-bar">
+            <div className={`progress-fill ${running && progress < 100 ? "indeterminate" : ""}`} style={{ width: progress + "%" }} />
+          </div>
+
+          {tab === "terminal" && (
+            <div className="terminal" ref={termRef}>
+              {logs.length === 0 && (
+                <div style={{ color: "var(--text-dim)", fontFamily: "var(--mono)", fontSize: 12 }}>
+                  <pre className="ascii">{` █████╗ ██████╗ ███████╗███████╗
+██╔══██╗██╔══██╗██╔════╝██╔════╝
+███████║██████╔╝█████╗  ███████╗
+██╔══██║██╔══██╗██╔══╝  ╚════██║
+██║  ██║██║  ██║███████╗███████║
+╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚══════╝`}</pre>
+                  <div>Autonomous Recon & Exploitation System v1.0</div>
+                  <div style={{ marginTop: 8, color: "var(--text-dim)" }}>Configure target and scope, then launch.</div>
+                  <div style={{ marginTop: 4, color: "var(--red)", fontSize: 11 }}>⚠ FOR AUTHORIZED SECURITY TESTING ONLY</div>
+                </div>
+              )}
+              {logs.map(entry => <LogLine key={entry.id} entry={entry} />)}
+              {running && <span className="cursor-blink" />}
+            </div>
+          )}
+
+          {tab === "results" && (
+            <div className="terminal">
+              {findings.length === 0 ? (
+                <div className="empty-state"><div className="empty-icon">⬡</div><div>No findings yet.</div><div>Launch an assessment to populate results.</div></div>
+              ) : (
+                <>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", marginBottom: 16, letterSpacing: 2 }}>
+                    VULNERABILITY FINDINGS — {findings.length} TOTAL
+                  </div>
+                  {findings.map((f, i) => (
+                    <div key={i} className={`finding ${f.sev}`} style={{ marginBottom: 10 }}>
+                      <div className="finding-title">{f.sev.toUpperCase()} — {f.title}</div>
+                      <div className="finding-desc">{f.description}</div>
+                      {f.cvss_score && <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--red)", marginTop: 4 }}>CVSS: {f.cvss_score}</div>}
+                    </div>
+                  ))}
+                  {(results.redteam?.confirmed_vulnerabilities || []).length > 0 && (
+                    <>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", margin: "20px 0 12px", letterSpacing: 2 }}>CONFIRMED BY RED TEAM</div>
+                      {results.redteam.confirmed_vulnerabilities.map((v, i) => (
+                        <div key={i} className="finding high">
+                          <div className="finding-title">✓ {v.name}</div>
+                          <div className="finding-desc">{v.evidence}</div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {(results.recon?.cve_matches || []).length > 0 && (
+                    <>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", margin: "20px 0 12px", letterSpacing: 2 }}>CVE MATCHES</div>
+                      {results.recon.cve_matches.map((c, i) => (
+                        <div key={i} style={{ padding: "8px 12px", border: "1px solid var(--border2)", marginBottom: 6, fontFamily: "var(--mono)", fontSize: 11 }}>
+                          <span style={{ color: "var(--red)" }}>{c.id}</span>
+                          <span style={{ color: "var(--orange)", marginLeft: 12 }}>CVSS {c.cvss_score}</span>
+                          <div style={{ color: "var(--text-dim)", marginTop: 4, fontSize: 10 }}>{c.description}</div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {tab === "report" && (
+            <div className="terminal">
+              {!done ? (
+                <div className="empty-state"><div className="empty-icon">◎</div><div>Report generated after assessment completion.</div></div>
+              ) : (
+                <div style={{ fontFamily: "var(--mono)", fontSize: 11, lineHeight: 1.9 }}>
+                  <div style={{ color: "var(--green)", fontSize: 14, letterSpacing: 4, marginBottom: 16 }}>ARES ASSESSMENT REPORT</div>
+                  {[["Target", sessionTarget || target], ["Session", sessionId?.slice(0, 8)], ["Date", new Date().toISOString().slice(0, 10)]].map(([k, v]) => (
+                    <div key={k} style={{ color: "var(--text-dim)" }}>{k}: <span style={{ color: "var(--text-bright)" }}>{v}</span></div>
+                  ))}
+                  {reportPath && <div style={{ color: "var(--text-dim)" }}>Report: <span style={{ color: "var(--text-bright)" }}>{reportPath.split("/").slice(-1)[0]}</span></div>}
+                  <div style={{ color: "var(--text-dim)" }}>Risk: <span style={{ color: riskLevel === "CRITICAL" ? "var(--red)" : riskLevel === "HIGH" ? "var(--orange)" : "var(--green)" }}>{riskLevel}</span></div>
+                  <div style={{ height: 1, background: "var(--border)", margin: "16px 0" }} />
+                  <div style={{ color: "var(--blue)", letterSpacing: 2, marginBottom: 8 }}>EXECUTIVE SUMMARY</div>
+                  <div>{results.osint?.summary || "Assessment complete."}</div>
+                  <div style={{ height: 1, background: "var(--border)", margin: "16px 0" }} />
+                  <div style={{ color: "var(--blue)", letterSpacing: 2, marginBottom: 8 }}>TECHNOLOGY STACK</div>
+                  <div className="tag-list">{(results.osint?.technology_stack || []).map((t, i) => <span key={i} className="tech-tag">{t}</span>)}</div>
+                  <div style={{ height: 1, background: "var(--border)", margin: "16px 0" }} />
+                  <div style={{ color: "var(--blue)", letterSpacing: 2, marginBottom: 8 }}>RECOMMENDATIONS</div>
+                  {(results.redteam?.recommendations || []).map((r, i) => (
+                    <div key={i} style={{ padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
+                      {i + 1}. {typeof r === "string" ? r : r.recommendation}
+                      {typeof r !== "string" && <span style={{ marginLeft: 8, color: r.priority === "CRITICAL" ? "var(--red)" : "var(--orange)", fontSize: 10 }}>[{r.priority}]</span>}
+                    </div>
+                  ))}
+                  <div style={{ height: 16 }} />
+                  {sessionId && <a className="download-btn" href={`${apiBase}/assess/${sessionId}/report`} download style={{ textDecoration: "none" }}>↓ DOWNLOAD FULL MARKDOWN REPORT</a>}
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+
+        <aside className="results-panel">
+          <div className="section-label">Live Findings</div>
+          {!results.osint ? (
+            <div className="empty-state"><div className="empty-icon">◈</div><div>Awaiting<br />assessment launch</div></div>
+          ) : (
+            <>
+              <div className="result-card">
+                <div className="result-card-header"><span>OSINT INTEL</span><span style={{ color: "var(--green)" }}>COMPLETE</span></div>
+                <div className="result-card-body">
+                  {[["Subdomains", results.osint.subdomains?.length || 0, "green"], ["Open Ports", results.osint.open_ports?.length || 0, "orange"], ["Risk Score", `${results.osint.risk_score || "?"}/10`, "orange"], ["Misconfigs", results.osint.misconfig_count || 0, results.osint.misconfig_count > 0 ? "red" : ""]].map(([k, v, c]) => (
+                    <div key={k} className="stat-row"><span className="stat-key">{k}</span><span className={`stat-val ${c}`}>{v}</span></div>
+                  ))}
+                  <div style={{ marginTop: 8 }}><div className="tag-list">{(results.osint.technology_stack || []).slice(0, 4).map((t, i) => <span key={i} className="tech-tag">{t}</span>)}</div></div>
+                </div>
+              </div>
+
+              {results.recon && (
+                <div className="result-card">
+                  <div className="result-card-header"><span>VULNERABILITIES</span><span style={{ color: "var(--orange)" }}>{(results.recon.critical_findings?.length || 0) + (results.recon.high_findings?.length || 0)} HIGH+</span></div>
+                  <div className="result-card-body">
+                    {[["Critical", results.recon.critical_findings?.length || 0, "red"], ["High", results.recon.high_findings?.length || 0, "orange"], ["Medium", results.recon.medium_findings?.length || 0, ""], ["CVEs", results.recon.cve_matches?.length || 0, ""]].map(([k, v, c]) => (
+                      <div key={k} className="stat-row"><span className="stat-key">{k}</span><span className={`stat-val ${c}`}>{v}</span></div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {results.redteam && (
+                <div className="result-card">
+                  <div className="result-card-header"><span>RED TEAM</span><span style={{ color: riskLevel === "CRITICAL" ? "var(--red)" : riskLevel === "HIGH" ? "var(--orange)" : "var(--green)" }}>{riskLevel}</span></div>
+                  <div className="result-card-body">
+                    <div className="stat-row"><span className="stat-key">Confirmed</span><span className="stat-val red">{results.redteam.confirmed_vulnerabilities?.length || 0}</span></div>
+                    <div className="stat-row"><span className="stat-key">PoCs</span><span className="stat-val orange">{results.redteam.proof_of_concepts?.length || 0}</span></div>
+                    {(results.redteam.confirmed_vulnerabilities || []).slice(0, 2).map((v, i) => (
+                      <div key={i} style={{ padding: "6px 8px", borderLeft: "2px solid var(--red)", marginTop: 8, background: "var(--deep)" }}>
+                        <div style={{ fontFamily: "var(--sans)", fontSize: 12, color: "var(--red)", fontWeight: 600 }}>{v.name}</div>
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", marginTop: 2 }}>{(v.evidence || "").slice(0, 60)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(results.osint?.subdomains || []).length > 0 && (
+                <div className="result-card">
+                  <div className="result-card-header"><span>SUBDOMAINS</span></div>
+                  <div className="result-card-body">
+                    {results.osint.subdomains.slice(0, 5).map((s, i) => (
+                      <div key={i} className="stat-row">
+                        <span className="stat-key" style={{ fontSize: 10 }}>{(s.subdomain || "").split(".")[0]}</span>
+                        <span className="stat-val" style={{ fontSize: 10, color: "var(--text-dim)" }}>{s.ip}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  ares:
+    build: .
+    container_name: ares-server
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - ARES_API_KEY=${ARES_API_KEY:?ARES_API_KEY must be set}
+      - ARES_ENV=prod
+      - ARES_OLLAMA_MODEL=${ARES_OLLAMA_MODEL:-qwen3.5:9b}
+      - ARES_OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - ARES_DB_PATH=/data/ares.db
+      - ARES_SAFE_TARGETS=${ARES_SAFE_TARGETS:-}
+    volumes:
+      - ares-data:/data
+      - ares-reports:/app/reports
+    depends_on:
+      - ollama
+    networks:
+      - ares-net
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ares-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      - ares-net
+
+volumes:
+  ares-data:
+  ares-reports:
+  ollama-models:
+
+networks:
+  ares-net:
+    driver: bridge

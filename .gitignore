@@ -1,0 +1,45 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Runtime artifacts
+*.log
+*.sarif.json
+*.cdx.json
+reports/*
+!reports/.gitkeep
+ares.db
+ares.db-shm
+ares.db-wal
+
+# macOS
+.DS_Store
+__MACOSX/
+
+# Local agent/runtime state
+.agent/
+.pytest_cache/
+
+# Claude artifact scaffolding
+ARES-OLLAMA/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
