@@ -37,6 +37,7 @@ from utils.standards_mapping import attach_standards_mappings
 from plugins.registry import default_registry
 from utils.audit_log import AuditLog
 from utils.replay import build_replay, write_replay
+from utils.scorecard import build_executive_scorecard
 from utils.config import (
     ASSET_INVENTORY_MAX_HTTP_PROBES,
     ENABLE_NMAP,
@@ -1425,6 +1426,7 @@ class ARESPipeline:
         manifest["run_id"] = self.run_id
         manifest["evidence_record_count"] = len(evidence_ledger)
         manifest["audit_chain_head"] = self.audit_log.chain_head
+        redteam["scorecard"] = build_executive_scorecard(osint, recon, redteam, manifest)
         osint["run_manifest"] = manifest
         recon["run_manifest"] = manifest
         redteam["run_manifest"] = manifest

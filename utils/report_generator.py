@@ -50,6 +50,22 @@ def generate_report(
 
 ---
 
+## Executive Scorecard
+
+"""
+    scorecard = redteam_report.get("scorecard", {})
+    metrics = scorecard.get("metrics", {})
+    if metrics:
+        for name, value in metrics.items():
+            md += f"- **{name.replace('_', ' ').title()}:** {value}/100\n"
+        md += f"- **Capability Profile:** `{scorecard.get('capability_profile', 'recon')}`\n"
+        md += f"- **RoE Loaded:** `{scorecard.get('roe_loaded', False)}`\n"
+    else:
+        md += "_Scorecard unavailable for this run._\n"
+
+    md += f"""
+---
+
 ## Run Manifest
 
 ```json

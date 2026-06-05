@@ -683,7 +683,7 @@ function App() {
 
         <main className="center">
           <div className="terminal-header">
-            {["terminal", "results", "report", "replay"].map(t => (
+            {["terminal", "results", "scorecard", "report", "replay"].map(t => (
               <div key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
                 <div className="tab-dot" />{t.toUpperCase()}
               </div>
@@ -829,6 +829,42 @@ function App() {
                   <div style={{ height: 16 }} />
                   {sessionId && <button className="download-btn" onClick={downloadReport}>↓ DOWNLOAD FULL MARKDOWN REPORT</button>}
                 </div>
+              )}
+            </div>
+          )}
+
+          {tab === "scorecard" && (
+            <div className="terminal">
+              {!results.redteam?.scorecard ? (
+                <div className="empty-state"><div className="empty-icon">◎</div><div>Executive scorecard available after completion.</div></div>
+              ) : (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 18 }}>
+                    {Object.entries(results.redteam.scorecard.metrics || {}).map(([name, value]) => (
+                      <div key={name} style={{ border: "1px solid var(--border2)", padding: 12, minHeight: 82 }}>
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-dim)", textTransform: "uppercase" }}>{name.replaceAll("_", " ")}</div>
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 24, color: value >= 70 ? "var(--red)" : value >= 40 ? "var(--orange)" : "var(--green)", marginTop: 8 }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ fontFamily: "var(--mono)", color: "var(--blue)", marginBottom: 10 }}>
+                    PROFILE: {results.redteam.scorecard.capability_profile?.toUpperCase()} · ROE: {results.redteam.scorecard.roe_loaded ? "LOADED" : "NOT LOADED"}
+                  </div>
+                  {[
+                    ["TOP CONFIRMED", results.redteam.scorecard.top_confirmed_findings],
+                    ["TOP REPORTABLE", results.redteam.scorecard.top_reportable_findings],
+                    ["MANUAL VERIFICATION", results.redteam.scorecard.manual_verification_candidates],
+                  ].map(([label, items]) => (
+                    <div key={label} style={{ marginTop: 16 }}>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", letterSpacing: 2 }}>{label}</div>
+                      {(items || []).map((item, i) => <div key={i} className="finding-desc">{i + 1}. {item.title} · {item.reportability_score || 0}/100</div>)}
+                    </div>
+                  ))}
+                  <div style={{ marginTop: 16, fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-dim)", letterSpacing: 2 }}>GOVERNANCE</div>
+                  <div className="finding-desc">Assets: {results.redteam.scorecard.asset_exposure_summary?.assets || 0} · Active findings: {results.redteam.scorecard.asset_exposure_summary?.active_findings || 0}</div>
+                  <div className="finding-desc">Coverage gaps: {(results.redteam.scorecard.coverage_gaps || []).join(", ") || "none"}</div>
+                  <div className="finding-desc">Blocked actions: {(results.redteam.scorecard.blocked_actions || []).length}</div>
+                </>
               )}
             </div>
           )}
