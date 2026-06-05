@@ -1,10 +1,30 @@
-# ARES - Autonomous Recon & Intelligence System
+# ARES - Authorized Recon & Evidence System
 
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-ARES is a security assessment platform for authorized operators who need a streaming recon pipeline, attack graph construction, AI-assisted kill chain analysis, and report exports that are useful in both engineering and security workflows. It combines passive OSINT, active service discovery, JavaScript intelligence, CVE and EPSS enrichment, MITRE ATT&CK mapping, SARIF/CycloneDX export, and a FastAPI/SSE backend designed for a browser dashboard or API clients.
+ARES is a capability-profile-driven security platform for authorized operators.
+It combines passive intelligence, active recon, RoE-gated non-destructive
+verification, lab-only exploit simulation, defensible evidence, analyst triage,
+tamper-evident audit, and enterprise/government export formats.
+
+ARES is intentionally powerful when authorization is explicit. Escalation is
+controlled by profile, scope, Rules of Engagement, method/path allowlists,
+operator intent, audit records, and evidence capture.
+
+## Capability Profiles
+
+| Profile | Intended Use | Governance |
+|---------|--------------|------------|
+| `passive` | External intelligence with minimal target interaction | Active network and verification actions blocked |
+| `recon` | Standard HTTP, TLS, service, CVE, EPSS, and asset discovery | Scope required; advanced verification blocked |
+| `advanced` | Serious non-destructive verification and moderate Nuclei | Feature flag plus explicit RoE |
+| `lab` | Local/demo exploit-chain simulation | Feature flag plus localhost/manifest lab target |
+| `custom` | Operator-defined capability allowlist | RoE required for every declared capability |
+
+See [docs/CAPABILITY_PROFILES.md](docs/CAPABILITY_PROFILES.md) and
+[docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
 
 ## Capabilities
 
@@ -16,7 +36,10 @@ ARES is a security assessment platform for authorized operators who need a strea
 | Vulnerability correlation | NVD CVE lookup and EPSS exploitation probability scoring for prioritization |
 | Attack graph | Asset/finding graph construction with MITRE ATT&CK technique tagging |
 | Kill chains | AI-driven kill chain analysis and risk synthesis through Ollama-compatible models |
-| Reporting | Markdown, JSON, SARIF 2.1, and CycloneDX-style export files under `reports/` |
+| Evidence and triage | Redacted evidence ledger, reproduction steps, confidence matrix, lifecycle review, and reportability scoring |
+| Reporting | Markdown, JSON, SARIF, CycloneDX, STIX, OSCAL, OpenVEX, and CSAF under `reports/` |
+| Governance | Capability profiles, YAML RoE, action decisions, tamper-evident audit chain, and replay timeline |
+| Extensibility | Governed built-in/external plugin registry with normalized ToolResult output |
 | Operations | API key auth, rate limiting, SQLite session persistence, bounded SSE queues, and Docker packaging |
 
 ## Architecture
@@ -107,6 +130,10 @@ X-ARES-Key: <your-key>
 | GET | `/assess/{id}/status` | Yes | Lightweight status poll with queue depth and report readiness |
 | GET | `/assess/{id}/results` | Yes | Full persisted results JSON |
 | GET | `/assess/{id}/report` | Yes | Download generated Markdown report |
+| GET | `/assess/{id}/report?format=stix|oscal|openvex|csaf` | Yes | Download a machine-readable evidence package |
+| GET | `/assess/{id}/findings` | Yes | Reportability-sorted analyst review queue |
+| PATCH | `/assess/{id}/findings/{finding_id}/review` | Yes | Persist lifecycle state and analyst notes |
+| POST | `/manual/verify-secret` | Yes | Advanced/custom volatile operator-supplied secret verification |
 | POST | `/assess/{id}/stop` | Yes | Abort a running assessment |
 | GET | `/assess` | Yes | List recent sessions |
 | GET | `/health` | Yes | Server health, safe config, Ollama status, and active session count |
@@ -270,6 +297,46 @@ ARES writes reports under `reports/` and keeps generated outputs out of source c
 - `reports/ARES_Report_<target>_<ts>.json` - full structured output
 - `reports/ARES_Report_<target>_<ts>.sarif.json` - SARIF 2.1 for IDE and CI integration
 - `reports/ARES_Report_<target>_<ts>.cdx.json` - CycloneDX-style output for SBOM/VEX workflows
+- `reports/ARES_Report_<target>_<ts>.stix.json` - STIX 2.1-like bundle
+- `reports/ARES_Report_<target>_<ts>.oscal.json` - OSCAL assessment-results package
+- `reports/ARES_Report_<target>_<ts>.openvex.json` - OpenVEX lifecycle statements
+- `reports/ARES_Report_<target>_<ts>.csaf.json` - CSAF 2.0-like draft advisory
+- `reports/<run_id>_replay.json` - chronological redacted audit/evidence replay
+
+## Local Demo
+
+```bash
+make demo-lab-up
+make demo-run-researcher
+make demo-run-government
+make demo-report
+make demo-lab-down
+```
+
+The lab binds synthetic services to localhost only. See [labs/README.md](labs/README.md).
+
+## Ollama
+
+The default model is `qwen3.5:9b`. Start Ollama and pull the model:
+
+```bash
+ollama serve
+ollama pull qwen3.5:9b
+```
+
+Set `ARES_OLLAMA_BASE_URL` and `ARES_OLLAMA_MODEL` when using another local
+endpoint. Cloud-tagged models may require an Ollama subscription and can return
+HTTP 403; use a locally installed model for an offline demo.
+
+## Troubleshooting
+
+- **401 from API:** send the configured `X-ARES-Key`.
+- **Advanced action blocked:** enable `ARES_ENABLE_ADVANCED_VERIFICATION` and load an RoE that permits the profile/action.
+- **Lab simulation blocked:** enable the lab flag and use localhost or a target declared in `labs/lab_manifest.yaml`.
+- **Nuclei skipped:** install `nuclei`, enable `ARES_ENABLE_NUCLEI`, and select an allowed profile.
+- **AI synthesis fallback:** verify Ollama is running and the configured model is locally available.
+- **Global pytest missing:** run tests with `PATH=venv/bin:$PATH python3 -m pytest tests/ -q`.
+- **Docker unavailable:** core tests still run; Docker build/lab startup require a running Docker engine.
 
 ## Authorized Use Only
 
