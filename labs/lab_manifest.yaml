@@ -1,0 +1,14 @@
+labs:
+  docker_services:
+    - ares-demo-lab
+    - juice-shop
+    - demo-api
+  cidrs:
+    - 127.0.0.0/8
+    - ::1/128
+    - 172.28.0.0/24
+  scenarios:
+    - exposed_actuator_secret_chain
+    - weak_cors_data_read_chain
+    - open_redirect_phishing_chain
+    - api_docs_to_endpoint_chain

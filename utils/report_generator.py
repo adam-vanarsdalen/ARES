@@ -341,6 +341,20 @@ def generate_report(
             if result.get("next_best_manual_test"):
                 md += f"  - Next manual test: {result.get('next_best_manual_test')}\n"
 
+    if redteam_report.get("profile") == "lab" and redteam_report.get("lab_simulations"):
+        md += "\n### Lab Exploit Simulation\n"
+        md += "_Simulation only. No real-target exploit execution is permitted or performed._\n\n"
+        for simulation in redteam_report.get("lab_simulations", []):
+            md += f"#### {simulation.get('scenario', 'Lab scenario')}\n"
+            md += f"- Simulation ID: `{simulation.get('simulation_id', '')}`\n"
+            md += f"- Lab only: `{simulation.get('lab_only', False)}`\n"
+            md += f"- Real-target execution allowed: `{simulation.get('real_target_execution_allowed', False)}`\n"
+            md += f"- Impact narrative: {simulation.get('impact_narrative', '')}\n"
+            md += f"- Safe reproduction: {simulation.get('safe_reproduction', '')}\n"
+            if simulation.get("controls_that_would_block"):
+                md += "- Controls: " + "; ".join(simulation.get("controls_that_would_block", [])) + "\n"
+            md += "\n"
+
     # ── Recommendations ───────────────────────────────────────────────────────
     md += "\n---\n\n## Recommendations\n\n"
     recs = redteam_report.get("recommendations", [])

@@ -155,7 +155,9 @@ def is_local_or_lab_target(target: str, roe: RoEPolicy | None = None) -> bool:
                     return True
             except ValueError:
                 continue
-    return False
+    from utils.lab_targets import is_lab_target
+
+    return is_lab_target(target)
 
 
 def _scope_validator(scope) -> ScopeValidator | None:

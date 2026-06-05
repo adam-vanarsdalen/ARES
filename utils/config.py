@@ -104,6 +104,7 @@ ENABLE_ADVANCED_VERIFICATION = _bool("ARES_ENABLE_ADVANCED_VERIFICATION", False)
 REQUIRE_ROE_FOR_ADVANCED = _bool("ARES_REQUIRE_ROE_FOR_ADVANCED", True)
 ENABLE_LAB_EXPLOIT_SIMULATION = _bool("ARES_ENABLE_LAB_EXPLOIT_SIMULATION", False)
 REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM = _bool("ARES_REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM", True)
+LAB_MANIFEST_PATH = _str("ARES_LAB_MANIFEST_PATH", "labs/lab_manifest.yaml")
 NUCLEI_PROFILE = _str("ARES_NUCLEI_PROFILE", "safe").lower()
 ROE_POLICY_PATH = _str("ARES_ROE_POLICY_PATH", "")
 
@@ -153,6 +154,7 @@ def as_dict() -> dict:
         "require_roe_for_advanced": REQUIRE_ROE_FOR_ADVANCED,
         "enable_lab_exploit_simulation": ENABLE_LAB_EXPLOIT_SIMULATION,
         "require_local_target_for_lab_exploit_sim": REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM,
+        "lab_manifest_path": LAB_MANIFEST_PATH,
         "nuclei_profile": NUCLEI_PROFILE,
         "roe_policy_configured": bool(ROE_POLICY_PATH),
         "event_queue_size": EVENT_QUEUE_SIZE,

@@ -45,6 +45,7 @@ from utils.config import (
     TLS_ADDITIONAL_TARGET_MAX,
     TLS_TIMEOUT,
     EXTERNAL_LOOKUP_TIMEOUT,
+    LAB_MANIFEST_PATH,
 )
 from tools.network_tools import (
     dns_lookup, whois_lookup, subdomain_enumerate,
@@ -66,6 +67,7 @@ from tools.redteam_verification import (
     test_open_redirect,
     verification_result,
 )
+from tools.lab_simulation import run_lab_simulations
 from tools.epss_scoring import enrich_cves_with_epss, epss_summary
 from tools.attack_graph import build_attack_graph, generate_kill_chains, map_to_mitre
 
@@ -2447,6 +2449,42 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
         redteam_report = await self._ai_redteam_synthesis(target, vuln_data, test_results, kill_chain_data)
         redteam_report["profile"] = self.profile.value
         redteam_report["profile_badge"] = self.profile.value.upper()
+        if self.profile == CapabilityProfile.LAB:
+            lab_decision = self.authorize_action("lab_exploit_simulation", target=self.target)
+            if lab_decision["allowed"]:
+                evidence_refs = [
+                    ref
+                    for finding in (
+                        vuln_data.get("critical_findings", [])
+                        + vuln_data.get("high_findings", [])
+                        + vuln_data.get("medium_findings", [])
+                    )
+                    for ref in finding.get("evidence_refs", [])
+                ]
+                simulations = await asyncio.to_thread(
+                    run_lab_simulations,
+                    self.target,
+                    None,
+                    LAB_MANIFEST_PATH,
+                    evidence_refs[:20],
+                )
+                redteam_report["lab_simulations"] = simulations
+                self.emit("tool_result", {"tool": "lab_exploit_simulation", "data": {
+                    "lab_only": True,
+                    "simulations": simulations,
+                }})
+            else:
+                redteam_report["lab_simulations"] = []
+                redteam_report.setdefault("verification_results", []).append({
+                    "test": "lab_exploit_simulation",
+                    "finding": "Lab exploit simulation",
+                    "result": verification_result(
+                        VerificationStatus.BLOCKED_BY_ROE,
+                        "Use a localhost or manifest-declared demo asset and explicitly enable lab simulation.",
+                        reason=lab_decision.get("reason", ""),
+                        matched_rule=lab_decision.get("matched_rule", ""),
+                    ),
+                })
         self.log("SUCCESS", f"Red team complete — risk: {redteam_report.get('overall_risk')}, "
                  f"{len(redteam_report.get('kill_chains', []))} kill chains", "green")
         return redteam_report

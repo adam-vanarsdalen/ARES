@@ -143,6 +143,7 @@ curl -s \
 | `ARES_REQUIRE_ROE_FOR_ADVANCED` | boolean | `true` | Requires a loaded RoE policy before advanced verification is authorized. |
 | `ARES_ENABLE_LAB_EXPLOIT_SIMULATION` | boolean | `false` | Enables lab-profile simulation capabilities; real public targets remain blocked. |
 | `ARES_REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM` | boolean | `true` | Restricts lab simulation to localhost or RoE-declared lab targets. |
+| `ARES_LAB_MANIFEST_PATH` | path | `labs/lab_manifest.yaml` | Docker service, lab CIDR, and simulation scenario allowlist. |
 | `ARES_NUCLEI_PROFILE` | enum | `safe` | Requested Nuclei policy profile. Nuclei integration is added in a later capability pass. |
 | `ARES_OLLAMA_MODEL` | string | `qwen3.5:9b` | Ollama model used for synthesis and kill chain analysis. |
 | `ARES_OLLAMA_BASE_URL` | URL | `http://localhost:11434` | Preferred Ollama API base URL. Compose sets this to `http://ollama:11434`. |
