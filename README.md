@@ -156,6 +156,8 @@ curl -s \
 | `ARES_NUCLEI_REQUIRE_ROE_FOR_MODERATE` | boolean | `true` | Requires RoE for moderate profile. |
 | `ARES_NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM` | boolean | `true` | Requires template IDs for custom profile. |
 | `ARES_ENABLE_EXTERNAL_PLUGINS` | boolean | `false` | Enables explicitly installed external plugins; built-ins remain available. |
+| `ARES_ENABLE_OTEL` | boolean | `false` | Enables optional OpenTelemetry spans when the dependency is installed. |
+| `ARES_OTEL_EXPORTER_OTLP_ENDPOINT` | URL | none | Optional OTLP exporter endpoint; no secret headers are accepted here. |
 | `ARES_OLLAMA_MODEL` | string | `qwen3.5:9b` | Ollama model used for synthesis and kill chain analysis. |
 | `ARES_OLLAMA_BASE_URL` | URL | `http://localhost:11434` | Preferred Ollama API base URL. Compose sets this to `http://ollama:11434`. |
 | `ARES_OLLAMA_BASE` | URL | `http://localhost:11434` | Legacy fallback name still accepted by config. |

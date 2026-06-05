@@ -35,6 +35,8 @@ from utils.finding_lifecycle import initialize_findings
 from utils.confidence_matrix import downgrade_overclaimed_findings
 from utils.standards_mapping import attach_standards_mappings
 from plugins.registry import default_registry
+from utils.audit_log import AuditLog
+from utils.replay import build_replay, write_replay
 from utils.config import (
     ASSET_INVENTORY_MAX_HTTP_PROBES,
     ENABLE_NMAP,
@@ -1262,13 +1264,34 @@ class ARESPipeline:
         self.log = log_fn
         self.phase = phase_fn
         self.started_at = datetime.now(timezone.utc).isoformat()
+        self.run_id = str(self.session.get("id") or self.session.get("session_id") or hashlib.sha256(
+            f"{self.target}|{self.started_at}".encode()
+        ).hexdigest()[:16])
+        self.audit_log = AuditLog(self.run_id)
+        self.audit_log.record("run_started", phase="orchestration", profile=self.profile.value, action_summary=f"Assessment started for {self.target}")
+        self.audit_log.record("profile_loaded", phase="orchestration", profile=self.profile.value, action_summary=f"Capability profile {self.profile.value} loaded")
+        self.audit_log.record(
+            "roe_loaded" if self.roe else "tool_skipped",
+            phase="orchestration",
+            profile=self.profile.value,
+            action_summary="Rules of Engagement loaded" if self.roe else "No Rules of Engagement policy loaded",
+        )
         self.tools_executed = []
+        self.llm_metadata = []
 
         def tracked_emit(event_type: str, data: dict):
             if event_type == "tool_result":
                 tool_name = data.get("tool")
                 if tool_name and tool_name not in self.tools_executed:
                     self.tools_executed.append(tool_name)
+                if tool_name:
+                    self.audit_log.record(
+                        "tool_completed",
+                        phase="pipeline",
+                        tool_name=tool_name,
+                        profile=self.profile.value,
+                        action_summary=f"{tool_name} completed",
+                    )
             emit_fn(event_type, data)
 
         self.emit = tracked_emit
@@ -1293,6 +1316,14 @@ class ARESPipeline:
             "observed_at": datetime.now(timezone.utc).isoformat(),
         }
         self.audit_events.append(event)
+        self.audit_log.record(
+            "action_denied" if not decision["allowed"] else "tool_started",
+            phase="authorization",
+            tool_name=action,
+            profile=self.profile.value,
+            action_summary=f"{method.upper()} {target or self.target} {path}".strip(),
+            decision=decision,
+        )
         if not decision["allowed"]:
             gap = f"capability_blocked:{action}:{decision['matched_rule']}"
             if gap not in self.authorization_gaps:
@@ -1360,12 +1391,8 @@ class ARESPipeline:
         )
         downgrade_overclaimed_findings(all_findings, redteam)
         attach_standards_mappings(all_findings)
-        manifest = self._run_manifest(osint, recon, redteam)
-        run_id = str(self.session.get("id") or self.session.get("session_id") or hashlib.sha256(
-            f"{self.target}|{self.started_at}".encode()
-        ).hexdigest()[:16])
         evidence_ledger = build_pipeline_evidence_ledger(
-            run_id,
+            self.run_id,
             self.profile.value,
             self.target,
             osint,
@@ -1374,13 +1401,35 @@ class ARESPipeline:
         )
         redteam["evidence_ledger"] = evidence_ledger
         initialize_findings({"recon": recon})
-        manifest["run_id"] = run_id
+        for evidence in evidence_ledger:
+            self.audit_log.record(
+                "evidence_created",
+                phase=evidence.get("phase", ""),
+                tool_name=evidence.get("tool_name", ""),
+                profile=self.profile.value,
+                action_summary=evidence.get("body_preview_redacted", ""),
+                evidence_id=evidence.get("evidence_id", ""),
+                finding_id=evidence.get("finding_id", ""),
+            )
+        for finding in initialize_findings({"recon": recon}):
+            self.audit_log.record(
+                "finding_created",
+                phase="recon",
+                profile=self.profile.value,
+                action_summary=finding.get("title", ""),
+                finding_id=finding.get("finding_id", ""),
+            )
+        self.audit_log.record("run_completed", phase="orchestration", profile=self.profile.value, action_summary="Pipeline phases completed")
+        manifest = self._run_manifest(osint, recon, redteam)
+        redteam["audit_log"] = self.audit_log.serialize()
+        manifest["run_id"] = self.run_id
         manifest["evidence_record_count"] = len(evidence_ledger)
+        manifest["audit_chain_head"] = self.audit_log.chain_head
         osint["run_manifest"] = manifest
         recon["run_manifest"] = manifest
         redteam["run_manifest"] = manifest
+        reports_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
         try:
-            reports_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
             report_path = generate_report(
                 target=self.target,
                 osint_report=osint,
@@ -1390,9 +1439,25 @@ class ARESPipeline:
                 run_manifest=manifest,
             )
             self.log("SUCCESS", f"Report saved: {report_path}", "green")
+            self.audit_log.record(
+                "report_exported",
+                phase="report",
+                tool_name="report_generator",
+                profile=self.profile.value,
+                action_summary="Markdown and structured reports exported",
+            )
         except Exception as e:
             report_path = None
             self.log("WARN", f"Report generation failed: {e}", "orange")
+        replay = build_replay(
+            self.run_id,
+            self.audit_log.serialize(),
+            evidence_ledger,
+            self.llm_metadata,
+        )
+        replay_path = write_replay(reports_dir, replay)
+        redteam["audit_log"] = self.audit_log.serialize()
+        redteam["replay_path"] = replay_path
         return {"osint": osint, "recon": recon, "redteam": redteam, "report_path": report_path}
 
     def _run_manifest(self, osint: dict, recon: dict, redteam: dict) -> dict:
@@ -1446,6 +1511,7 @@ class ARESPipeline:
                 f"risky-method-checks-enabled={ENABLE_RISKY_METHOD_CHECKS}",
             ],
             "capability_audit": self.audit_events,
+            "audit_chain_head": self.audit_log.chain_head,
         }
 
     async def _build_recon_only_context(self) -> dict:

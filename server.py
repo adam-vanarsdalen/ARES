@@ -54,6 +54,7 @@ from exporters.stix_exporter import build_stix_bundle
 from exporters.oscal_exporter import build_oscal_assessment_results
 from exporters.openvex_exporter import build_openvex
 from exporters.csaf_exporter import build_csaf_advisory
+from utils.audit_log import append_audit_event
 from utils.session_store import (
     create_session,
     get_session,
@@ -443,6 +444,19 @@ async def patch_finding_review(session_id: str, finding_id: str, req: FindingRev
         reviewed = review_finding(finding, updates)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    redteam = session["results"].setdefault("redteam", {})
+    manifest = redteam.get("run_manifest") or session["results"].get("recon", {}).get("run_manifest", {})
+    audit_events = redteam.setdefault("audit_log", [])
+    appended = append_audit_event(
+        audit_events,
+        manifest.get("run_id", session_id),
+        "finding_state_changed",
+        profile=(manifest.get("profile") or {}).get("profile", ""),
+        action_summary=f"{finding_id} changed to {reviewed.get('lifecycle_state')}",
+        finding_id=finding_id,
+        decision={"analyst_review": True, "lifecycle_state": reviewed.get("lifecycle_state")},
+    )
+    manifest["audit_chain_head"] = appended["event_hash"]
     update_session(session_id, results=session["results"])
     return {"session_id": session_id, "finding": reviewed}
 

@@ -270,7 +270,10 @@ function App() {
   }, [apiKey]);
 
   useEffect(() => {
-    if (done && sessionId) loadReviewFindings(sessionId);
+    if (done && sessionId) {
+      loadReviewFindings(sessionId);
+      loadFinalResults(sessionId);
+    }
   }, [done, sessionId]);
 
   useEffect(() => {
@@ -400,6 +403,11 @@ function App() {
     if (!sid) return;
     const res = await fetch(`${apiBaseRef.current}/assess/${sid}/findings`, { headers: authHeaders() });
     if (res.ok) setReviewFindings((await res.json()).findings || []);
+  };
+
+  const loadFinalResults = async (sid) => {
+    const res = await fetch(`${apiBaseRef.current}/assess/${sid}/results`, { headers: authHeaders() });
+    if (res.ok) setResults((await res.json()).results || {});
   };
 
   const updateFindingReview = async (findingId, lifecycleState, analystNotes = "") => {
@@ -675,7 +683,7 @@ function App() {
 
         <main className="center">
           <div className="terminal-header">
-            {["terminal", "results", "report"].map(t => (
+            {["terminal", "results", "report", "replay"].map(t => (
               <div key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
                 <div className="tab-dot" />{t.toUpperCase()}
               </div>
@@ -821,6 +829,25 @@ function App() {
                   <div style={{ height: 16 }} />
                   {sessionId && <button className="download-btn" onClick={downloadReport}>↓ DOWNLOAD FULL MARKDOWN REPORT</button>}
                 </div>
+              )}
+            </div>
+          )}
+
+          {tab === "replay" && (
+            <div className="terminal">
+              {(results.redteam?.audit_log || []).length === 0 ? (
+                <div className="empty-state"><div className="empty-icon">◎</div><div>Audit timeline available after pipeline activity.</div></div>
+              ) : (
+                <>
+                  <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", marginBottom: 14, letterSpacing: 2 }}>TAMPER-EVIDENT RUN TIMELINE</div>
+                  {(results.redteam.audit_log || []).map(event => (
+                    <div key={event.event_id} style={{ padding: "8px 10px", borderLeft: "2px solid var(--blue)", marginBottom: 7, background: "var(--deep)" }}>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--blue)" }}>{event.event_id} · {event.event_type}</div>
+                      <div className="finding-desc">{event.action_summary}</div>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--text-dim)" }}>{event.event_hash?.slice(0, 20)}...</div>
+                    </div>
+                  ))}
+                </>
               )}
             </div>
           )}
