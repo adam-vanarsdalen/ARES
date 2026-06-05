@@ -31,6 +31,7 @@ from utils.report_generator import generate_report
 from utils.capability_profiles import CapabilityProfile, profile_summary, resolve_profile
 from utils.roe import evaluate_capability_action, load_roe_policy
 from utils.evidence_ledger import build_pipeline_evidence_ledger
+from utils.finding_lifecycle import initialize_findings
 from utils.config import (
     ASSET_INVENTORY_MAX_HTTP_PROBES,
     ENABLE_NMAP,
@@ -1362,6 +1363,7 @@ class ARESPipeline:
             redteam,
         )
         redteam["evidence_ledger"] = evidence_ledger
+        initialize_findings({"recon": recon})
         manifest["run_id"] = run_id
         manifest["evidence_record_count"] = len(evidence_ledger)
         osint["run_manifest"] = manifest

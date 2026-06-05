@@ -279,6 +279,13 @@ def generate_report(
                 md += f"- **{finding.get('severity', 'MEDIUM')}** {finding.get('title', 'TLS finding')}: {finding.get('description', '')}\n"
 
     prioritized = vuln_report.get("prioritized_findings", [])
+    reportable = sorted(
+        [
+            finding for finding in prioritized
+            if finding.get("lifecycle_state") not in {"false_positive", "duplicate"}
+        ],
+        key=lambda item: -item.get("reportability_score", 0),
+    )
     evidence_ledger = redteam_report.get("evidence_ledger", [])
     evidence_by_id = {item.get("evidence_id"): item for item in evidence_ledger}
     if prioritized:
@@ -300,12 +307,34 @@ def generate_report(
                 if evidence.get("reproduction_hint"):
                     md += f"  - Reproduce: {evidence.get('reproduction_hint')}\n"
 
+    if reportable:
+        md += "\n### Top Reportable Findings\n"
+        for finding in reportable[:10]:
+            md += (
+                f"- **{finding.get('reportability_score', 0)}/100** "
+                f"{finding.get('title', 'Finding')} "
+                f"(`{finding.get('operational_priority', 'monitor')}`)\n"
+            )
+
+    manual_candidates = [
+        finding for finding in reportable
+        if finding.get("lifecycle_state") in {"new", "needs_review"}
+        and finding.get("reportability_score", 0) < 70
+    ]
+    if manual_candidates:
+        md += "\n### Manual Verification Candidates\n"
+        for finding in manual_candidates[:10]:
+            md += f"- {finding.get('title', 'Finding')}: {finding.get('next_best_manual_test') or 'Review the linked evidence and reproduce manually.'}\n"
+
     # ── Red Team Results ──────────────────────────────────────────────────────
     md += "\n---\n\n## Phase 3: Red Team Results\n\n### Confirmed Vulnerabilities\n"
     if redteam_report.get("profile_badge"):
         md += f"\n**Capability Profile:** `{redteam_report.get('profile_badge')}`\n\n"
 
-    confirmed = redteam_report.get("confirmed_vulnerabilities", [])
+    confirmed = [
+        item for item in redteam_report.get("confirmed_vulnerabilities", [])
+        if item.get("lifecycle_state") not in {"false_positive", "duplicate"}
+    ]
     if confirmed:
         for v in confirmed:
             md += f"#### ✅ {v.get('name', 'Vulnerability')}\n"

@@ -49,6 +49,7 @@ from utils.config import (
     as_dict as config_dict,
 )
 from tools.secret_workbench import verify_operator_secret
+from utils.finding_lifecycle import find_finding, initialize_findings, review_finding
 from utils.session_store import (
     create_session,
     get_session,
@@ -189,6 +190,15 @@ class ManualSecretVerifyRequest(BaseModel):
     perform_metadata_check: bool = False
     secret_access_key: SecretStr | None = None
     session_token: SecretStr | None = None
+
+
+class FindingReviewRequest(BaseModel):
+    lifecycle_state: str | None = None
+    analyst_notes: str | None = Field(default=None, max_length=4000)
+    duplicate_of: str | None = Field(default=None, max_length=256)
+    false_positive_reason: str | None = Field(default=None, max_length=2000)
+    accepted_risk_reason: str | None = Field(default=None, max_length=2000)
+    next_best_manual_test: str | None = Field(default=None, max_length=2000)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -399,6 +409,38 @@ async def get_results(session_id: str):
         "status": session["status"],
         "results": session["results"]
     }
+
+
+@app.get("/assess/{session_id}/findings")
+async def get_findings(session_id: str):
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(404, "Session not found")
+    findings = initialize_findings(session["results"])
+    return {
+        "session_id": session_id,
+        "findings": sorted(
+            findings,
+            key=lambda item: (-item.get("reportability_score", 0), item.get("title", "")),
+        ),
+    }
+
+
+@app.patch("/assess/{session_id}/findings/{finding_id}/review")
+async def patch_finding_review(session_id: str, finding_id: str, req: FindingReviewRequest):
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(404, "Session not found")
+    finding = find_finding(session["results"], finding_id)
+    if finding is None:
+        raise HTTPException(404, "Finding not found")
+    updates = req.model_dump(exclude_none=True)
+    try:
+        reviewed = review_finding(finding, updates)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    update_session(session_id, results=session["results"])
+    return {"session_id": session_id, "finding": reviewed}
 
 
 @app.get("/assess/{session_id}/status")

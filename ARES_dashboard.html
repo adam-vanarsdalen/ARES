@@ -235,6 +235,7 @@ function App() {
   const [secretProvider, setSecretProvider] = useState("github");
   const [volatileSecret, setVolatileSecret] = useState("");
   const [secretVerifyResult, setSecretVerifyResult] = useState(null);
+  const [reviewFindings, setReviewFindings] = useState([]);
   const [tab, setTab] = useState("terminal");
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(false);
@@ -267,6 +268,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem("aresApiKey", apiKey);
   }, [apiKey]);
+
+  useEffect(() => {
+    if (done && sessionId) loadReviewFindings(sessionId);
+  }, [done, sessionId]);
 
   useEffect(() => {
     checkServer();
@@ -389,6 +394,24 @@ function App() {
     } finally {
       setVolatileSecret("");
     }
+  };
+
+  const loadReviewFindings = async (sid) => {
+    if (!sid) return;
+    const res = await fetch(`${apiBaseRef.current}/assess/${sid}/findings`, { headers: authHeaders() });
+    if (res.ok) setReviewFindings((await res.json()).findings || []);
+  };
+
+  const updateFindingReview = async (findingId, lifecycleState, analystNotes = "") => {
+    if (!sessionId) return;
+    const payload = { lifecycle_state: lifecycleState, analyst_notes: analystNotes };
+    if (lifecycleState === "false_positive") payload.false_positive_reason = analystNotes || "Analyst review";
+    const res = await fetch(`${apiBaseRef.current}/assess/${sessionId}/findings/${findingId}/review`, {
+      method: "PATCH",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) await loadReviewFindings(sessionId);
   };
 
   const handleStreamEvent = useCallback((eventName, payload) => {
@@ -727,6 +750,27 @@ function App() {
                           </div>
                           {item.result?.reason && <div className="finding-desc">{item.result.reason}</div>}
                           {item.result?.next_best_manual_test && <div className="finding-desc">Next: {item.result.next_best_manual_test}</div>}
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {reviewFindings.length > 0 && (
+                    <>
+                      <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-dim)", margin: "20px 0 12px", letterSpacing: 2 }}>FINDING REVIEW QUEUE</div>
+                      {reviewFindings.map((finding) => (
+                        <div key={finding.finding_id} style={{ padding: "10px 12px", border: "1px solid var(--border2)", marginBottom: 8 }}>
+                          <div className="finding-title">{finding.reportability_score}/100 · {finding.title}</div>
+                          <div className="finding-desc">{finding.operational_priority} · {finding.confidence} confidence</div>
+                          <textarea
+                            className="input-field"
+                            rows={2}
+                            placeholder="Analyst notes"
+                            defaultValue={finding.analyst_notes || ""}
+                            onBlur={e => updateFindingReview(finding.finding_id, finding.lifecycle_state, e.target.value)}
+                          />
+                          <select className="input-field" value={finding.lifecycle_state} onChange={e => updateFindingReview(finding.finding_id, e.target.value, finding.analyst_notes || "")}>
+                            {["new", "needs_review", "confirmed", "false_positive", "duplicate", "accepted_risk", "reported", "fixed", "retest_passed"].map(state => <option key={state} value={state}>{state}</option>)}
+                          </select>
                         </div>
                       ))}
                     </>
