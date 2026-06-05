@@ -76,6 +76,14 @@ def test_unauthenticated_401(client):
     assert r.status_code == 401
 
 
+def test_report_download_requires_authentication(client):
+    import server
+
+    server.create_session("report-auth-test", "example.com", "full", "2026-06-04T00:00:00Z")
+    r = client.get("/assess/report-auth-test/report")
+    assert r.status_code == 401
+
+
 def test_stop_unknown_session_404(client):
     r = client.post("/assess/nonexistent/stop", headers=_HEADERS)
     assert r.status_code == 404

@@ -48,6 +48,19 @@ class TestReconServiceFingerprints(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "open_ports": ["80/tcp open http nginx/1.19.0"],
                     "detected_tech": [{"name": "nginx 1.19.0", "version": "1.19.0", "cpe": "nginx:nginx:1.19.0"}],
+                    "service_inventory": [
+                        {
+                            "port": 80,
+                            "protocol": "tcp",
+                            "service": "http",
+                            "product": "nginx",
+                            "version": "1.19.0",
+                            "extrainfo": "",
+                            "tunnel": "",
+                            "candidate_cpes": ["cpe:2.3:a:nginx:nginx:1.19.0:*:*:*:*:*:*:*"],
+                            "confidence": "HIGH",
+                        }
+                    ],
                 },
             ),
             patch.object(
@@ -60,6 +73,8 @@ class TestReconServiceFingerprints(unittest.IsolatedAsyncioTestCase):
                     ],
                 },
             ) as fetch_cve_data,
+            patch.object(pipeline, "probe_version_disclosure", return_value={"base_url": "https://example.com", "paths": [], "findings": [], "coverage": {"paths_total": 18, "exposed": 0, "protected": 0, "absent": 18}}),
+            patch.object(pipeline, "tls_audit", return_value={"target": "example.com", "port": 443, "certificate": {}, "protocols": {}, "selected_cipher": "", "findings": [], "coverage": {}}),
             patch.object(pipeline, "enrich_cves_with_epss", side_effect=lambda items: items),
             patch.object(pipeline, "epss_summary", return_value={}),
             patch.object(pipeline, "map_to_mitre", side_effect=lambda items: items),
@@ -79,9 +94,10 @@ class TestReconServiceFingerprints(unittest.IsolatedAsyncioTestCase):
         ):
             out = await p._run_recon(osint_data)
 
-        fetch_cve_data.assert_called_with("nginx:nginx:1.19.0")
+        fetch_cve_data.assert_called_with("cpe:2.3:a:nginx:nginx:1.19.0:*:*:*:*:*:*:*")
         self.assertEqual(len(out["cve_matches"]), 1)
         self.assertIn("nginx 1.19.0", osint_data["technology_stack"])
+        self.assertEqual(out["_service_inventory"][0]["product"], "nginx")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import socket
 import subprocess
 import json
 import ipaddress
+import os
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -24,8 +25,10 @@ from utils.config import (
     HTTP_PROBE_MAX_BODY_BYTES,
     HTTP_PROBE_TIMEOUT as HTTP_PROBE_TIMEOUT_S,
     HTTP_PROBE_TOTAL_BUDGET as HTTP_PROBE_TOTAL_BUDGET_S,
+    EVIDENCE_PREVIEW_MAX_CHARS,
     MISCONFIG_TIMEOUT as MISCONFIG_REQUEST_TIMEOUT_S,
     MISCONFIG_TOTAL_BUDGET as MISCONFIG_TOTAL_BUDGET_S,
+    VERSION_DISCLOSURE_TIMEOUT,
 )
 from utils.scope_validator import ScopeValidator
 
@@ -58,6 +61,52 @@ HTTP_ACCEPT = "text/html,application/xhtml+xml,*/*"
 PROBE_ENTRYPOINTS = ("", "/", "/index.php", "/index.html", "/default.aspx")
 SLOW_TARGET_SUFFIXES = ("vulnweb.com",)
 LOOPBACK_WEB_PORTS = (8080, 3000)
+EMAIL_RE = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+FALLBACK_SUBDOMAIN_WORDLIST = [
+    "www", "mail", "api", "admin", "login", "auth", "app", "dev",
+    "staging", "test", "portal", "vpn", "docs", "support", "cdn",
+]
+VERSION_DISCLOSURE_PATHS = (
+    "/CHANGELOG.md",
+    "/readme.txt",
+    "/readme.html",
+    "/version.txt",
+    "/build-info",
+    "/.well-known/security.txt",
+    "/server-status",
+    "/server-info",
+    "/actuator/health",
+    "/actuator/env",
+    "/actuator/mappings",
+    "/actuator/beans",
+    "/telescope",
+    "/horizon",
+    "/admin",
+    "/wp-admin/",
+    "/wp-json/",
+    "/phpinfo.php",
+)
+SECRET_REDACTIONS = (
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED_AWS_KEY]"),
+    (re.compile(r"Bearer\s+[A-Za-z0-9._\-]{16,}", re.IGNORECASE), "Bearer [REDACTED_TOKEN]"),
+    (re.compile(r"ghp_[A-Za-z0-9]{36}"), "[REDACTED_GITHUB_TOKEN]"),
+    (re.compile(r"sk_(?:live|test)_[A-Za-z0-9]{16,}"), "[REDACTED_STRIPE_KEY]"),
+    (re.compile(r"(?i)(password|passwd|pwd)\s*[:=]\s*['\"]?[^'\"\s,&<]{4,}"), r"\1=[REDACTED]"),
+    (re.compile(r"(?i)(api[_\-]?key|apikey)\s*[:=]\s*['\"]?[^'\"\s,&<]{8,}"), r"\1=[REDACTED]"),
+)
+SENSITIVE_BODY_MARKERS = (
+    "aws_access_key_id",
+    "secret_access_key",
+    "api_key",
+    "apikey",
+    "password",
+    "passwd",
+    "bearer ",
+    "ghp_",
+    "sk_live_",
+    "database_url",
+    "jdbc:",
+)
 
 
 def _extract_tech(text: str) -> list:
@@ -82,6 +131,78 @@ def _extract_tech(text: str) -> list:
 
 def _cpe_strings(tech_list: list) -> list:
     return _unique([t["cpe"] for t in tech_list if t.get("cpe")])
+
+
+def _cpe23(vendor: str, product: str, version: str) -> str:
+    version = version or "*"
+    return f"cpe:2.3:a:{vendor}:{product}:{version}:*:*:*:*:*:*:*"
+
+
+def _candidate_cpes_for_service(product: str, version: str, service: str = "", extrainfo: str = "") -> list[str]:
+    haystack = " ".join([product or "", service or "", extrainfo or ""]).lower()
+    mappings = (
+        (("apache httpd", "apache http server"), ("apache", "http_server")),
+        (("nginx",), ("nginx", "nginx")),
+        (("openssl",), ("openssl", "openssl")),
+        (("apache tomcat", "tomcat"), ("apache", "tomcat")),
+        (("microsoft iis", "microsoft-iis", "iis"), ("microsoft", "internet_information_services")),
+        (("php",), ("php", "php")),
+        (("openssh", "open ssh"), ("openbsd", "openssh")),
+        (("postfix",), ("postfix", "postfix")),
+        (("exim",), ("exim", "exim")),
+        (("mysql",), ("mysql", "mysql")),
+        (("postgresql", "postgres"), ("postgresql", "postgresql")),
+    )
+    out = []
+    for needles, (vendor, cpe_product) in mappings:
+        if any(needle in haystack for needle in needles):
+            out.append(_cpe23(vendor, cpe_product, version))
+    return out
+
+
+def parse_service_banners(nmap_xml: str) -> list[dict]:
+    """Parse nmap XML service records into structured inventory with CPE candidates."""
+    try:
+        root = ET.fromstring(nmap_xml or "")
+    except ET.ParseError:
+        return []
+
+    inventory = []
+    for port in root.findall(".//port"):
+        state = port.find("state")
+        if state is not None and state.get("state") and state.get("state") != "open":
+            continue
+        service = port.find("service")
+        portid = port.get("portid", "")
+        try:
+            port_num = int(portid)
+        except (TypeError, ValueError):
+            continue
+        protocol = port.get("protocol", "")
+        service_name = service.get("name", "") if service is not None else ""
+        product = service.get("product", "") if service is not None else ""
+        version = service.get("version", "") if service is not None else ""
+        extrainfo = service.get("extrainfo", "") if service is not None else ""
+        tunnel = service.get("tunnel", "") if service is not None else ""
+        candidate_cpes = _candidate_cpes_for_service(product, version, service_name, extrainfo)
+        if candidate_cpes and version:
+            confidence = "HIGH"
+        elif product:
+            confidence = "MEDIUM"
+        else:
+            confidence = "LOW"
+        inventory.append({
+            "port": port_num,
+            "protocol": protocol,
+            "service": service_name,
+            "product": product,
+            "version": version,
+            "extrainfo": extrainfo,
+            "tunnel": tunnel,
+            "candidate_cpes": candidate_cpes,
+            "confidence": confidence,
+        })
+    return inventory
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -128,6 +249,74 @@ def _unique(seq):
         seen.add(item)
         out.append(item)
     return out
+
+
+def redact_email(email: str) -> str:
+    email = (email or "").strip()
+    if "@" not in email:
+        return email
+    local, domain = email.split("@", 1)
+    prefix = local[:2]
+    return f"{prefix}***@{domain.lower()}"
+
+
+def _parse_whois_org_osint(text: str, fields: dict | None = None) -> dict:
+    fields = fields or {}
+    organization = (
+        fields.get("Registrant Organization")
+        or fields.get("OrgName")
+        or fields.get("Organization")
+        or fields.get("Registrant Org")
+        or ""
+    )
+    registrar = fields.get("Registrar") or fields.get("Sponsoring Registrar") or ""
+    emails = []
+    abuse_emails = []
+
+    for line in text.splitlines():
+        clean = line.strip()
+        if not clean:
+            continue
+        if ":" in clean:
+            key, value = clean.split(":", 1)
+            norm_key = key.strip().lower()
+            value = value.strip()
+            if not organization and norm_key in {
+                "orgname",
+                "organization",
+                "registrant organization",
+                "registrant org",
+            }:
+                organization = value
+            if not registrar and norm_key in {"registrar", "sponsoring registrar"}:
+                registrar = value
+        else:
+            norm_key = ""
+        found_emails = [m.group(0).lower() for m in EMAIL_RE.finditer(clean)]
+        if not found_emails:
+            continue
+        if "abuse" in norm_key or "abuse" in clean.lower():
+            abuse_emails.extend(found_emails)
+        elif any(token in norm_key for token in ("admin", "tech", "registrant", "contact", "email")):
+            emails.extend(found_emails)
+
+    return {
+        "organization": organization,
+        "registrar": registrar,
+        "emails": _unique(emails),
+        "abuse_emails": _unique(abuse_emails),
+        "source": "whois",
+    }
+
+
+def redact_org_osint(org_osint: dict) -> dict:
+    return {
+        "organization": org_osint.get("organization", ""),
+        "registrar": org_osint.get("registrar", ""),
+        "emails": [redact_email(email) for email in org_osint.get("emails", [])],
+        "abuse_emails": [redact_email(email) for email in org_osint.get("abuse_emails", [])],
+        "source": org_osint.get("source", "whois"),
+    }
 
 
 def _normalize_probe_url(url: str) -> str:
@@ -195,6 +384,190 @@ def _is_slow_target(target: str) -> bool:
     return any(host == suffix or host.endswith("." + suffix) for suffix in SLOW_TARGET_SUFFIXES)
 
 
+def _resolve_wordlist_path(path: str) -> str:
+    if os.path.isabs(path):
+        return path
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(repo_root, path)
+
+
+def load_subdomain_wordlist(path: str, max_words: int) -> list[str]:
+    """Load, normalize, dedupe, and cap subdomain candidates."""
+    limit = max(int(max_words or 0), 1)
+    resolved = _resolve_wordlist_path(path)
+    words = []
+    try:
+        with open(resolved, "r", encoding="utf-8") as f:
+            for line in f:
+                word = line.strip().lower()
+                if not word or word.startswith("#"):
+                    continue
+                if word not in words:
+                    words.append(word)
+                if len(words) >= limit:
+                    break
+    except OSError:
+        words = []
+        for word in FALLBACK_SUBDOMAIN_WORDLIST:
+            word = word.strip().lower()
+            if word and word not in words:
+                words.append(word)
+            if len(words) >= limit:
+                break
+    return words
+
+
+def subdomain_wordlist_source(path: str) -> str:
+    resolved = _resolve_wordlist_path(path)
+    return path if os.path.exists(resolved) else "internal fallback"
+
+
+def _normalize_base_url(base_url: str) -> str:
+    base_url = (base_url or "").strip()
+    if "://" not in base_url:
+        base_url = f"https://{base_url}"
+    parsed = urllib.parse.urlparse(base_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return base_url
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+
+
+def _redact_preview(text: str, limit: int = EVIDENCE_PREVIEW_MAX_CHARS) -> str:
+    preview = (text or "")[:max(int(limit or 0), 0)]
+    for pattern, replacement in SECRET_REDACTIONS:
+        preview = pattern.sub(replacement, preview)
+    return preview
+
+
+def _version_disclosure_request(url: str, timeout: int | float) -> tuple[int, str]:
+    ctx = _build_ssl_context()
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": HTTP_USER_AGENT, "Accept": HTTP_ACCEPT},
+        method="GET",
+    )
+    opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=ctx))
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return int(getattr(resp, "status", 0) or 0), resp.read(EVIDENCE_PREVIEW_MAX_CHARS * 4).decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read(EVIDENCE_PREVIEW_MAX_CHARS * 4).decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        return int(getattr(exc, "code", 0) or 0), body
+    except Exception:
+        return 0, ""
+
+
+def _classify_version_path(path: str, status: int, body: str) -> tuple[bool, bool, str, str, str]:
+    if status in (401, 403):
+        return True, True, "info", _framework_hint(path, body), "protected existence evidence"
+    if status == 404 or status == 0:
+        return False, False, "info", "", "absent"
+    if status < 200 or status >= 400:
+        return False, False, "info", "", f"http_{status}"
+
+    lower = body.lower()
+    sensitive = any(marker in lower for marker in SENSITIVE_BODY_MARKERS)
+    hint = _framework_hint(path, body)
+    if path == "/actuator/env":
+        return True, False, "critical" if sensitive else "high", hint or "Spring Boot Actuator", "Spring Actuator environment exposure"
+    if path in ("/actuator/mappings", "/actuator/beans"):
+        return True, False, "high", hint or "Spring Boot Actuator", "Spring Actuator internals exposed"
+    if path in ("/server-status", "/server-info"):
+        detailed = any(marker in lower for marker in ("server uptime", "apache", "module", "requests/sec", "server version"))
+        return True, False, "high" if detailed else "medium", hint or "Apache status", "server status/info exposure"
+    if path == "/phpinfo.php":
+        detailed = any(marker in lower for marker in ("php version", "phpinfo()", "loaded configuration file", "_server"))
+        return True, False, "high" if detailed else "medium", hint or "PHP", "phpinfo exposure"
+    if path in ("/telescope", "/horizon"):
+        detailed = any(marker in lower for marker in ("laravel", "telescope", "horizon", "jobs", "redis"))
+        return True, False, "high" if detailed else "medium", hint or "Laravel", "Laravel operational UI exposed"
+    if path in ("/admin", "/wp-admin/"):
+        return True, False, "medium", hint or ("WordPress" if path == "/wp-admin/" else "Admin interface"), "admin interface reachable"
+    if path == "/wp-json/":
+        return True, False, "medium", hint or "WordPress", "WordPress REST API exposed"
+    if path in ("/CHANGELOG.md", "/readme.txt", "/readme.html", "/version.txt", "/build-info"):
+        versioned = bool(re.search(r"\b(?:version|v)?\d+\.\d+(?:\.\d+)?\b", body, re.IGNORECASE))
+        return True, False, "medium" if versioned else "low", hint, "public version/build disclosure"
+    if path == "/.well-known/security.txt":
+        return True, False, "info", hint, "security.txt present"
+    return True, False, "low", hint, "reachable framework path"
+
+
+def _framework_hint(path: str, body: str) -> str:
+    lower = (body or "").lower()
+    if "spring" in lower or path.startswith("/actuator/"):
+        return "Spring Boot"
+    if "laravel" in lower or path in ("/telescope", "/horizon"):
+        return "Laravel"
+    if "django" in lower:
+        return "Django"
+    if "wordpress" in lower or path.startswith("/wp-"):
+        return "WordPress"
+    if "phpinfo" in lower or "php version" in lower:
+        return "PHP"
+    if "apache" in lower or path.startswith("/server-"):
+        return "Apache"
+    return ""
+
+
+def probe_version_disclosure(base_url: str, scope: ScopeValidator) -> dict:
+    scope.assert_in_scope(base_url)
+    normalized_base = _normalize_base_url(base_url)
+    result = {"base_url": normalized_base, "paths": [], "findings": [], "coverage": {}}
+    exposed = protected = absent = failed = 0
+
+    for path in VERSION_DISCLOSURE_PATHS:
+        url = urllib.parse.urljoin(normalized_base + "/", path.lstrip("/"))
+        status, body = _version_disclosure_request(url, VERSION_DISCLOSURE_TIMEOUT)
+        exists, is_protected, risk, hint, reason = _classify_version_path(path, status, body)
+        preview = _redact_preview(body)
+        entry = {
+            "url": url,
+            "path": path,
+            "status_code": status,
+            "exists": exists,
+            "protected": is_protected,
+            "risk": risk,
+            "framework_hint": hint,
+            "reason": reason,
+            "evidence_preview": preview,
+        }
+        result["paths"].append(entry)
+        if is_protected:
+            protected += 1
+        elif exists:
+            exposed += 1
+        elif status == 0:
+            failed += 1
+        else:
+            absent += 1
+        if exists and not is_protected and risk in {"low", "medium", "high", "critical"}:
+            result["findings"].append({
+                "title": f"{path} exposure",
+                "path": path,
+                "url": url,
+                "severity": risk.upper(),
+                "risk": risk,
+                "framework_hint": hint,
+                "description": reason,
+                "evidence_preview": preview,
+                "evidence_refs": ["probe_version_disclosure"],
+            })
+
+    result["coverage"] = {
+        "paths_total": len(VERSION_DISCLOSURE_PATHS),
+        "exposed": exposed,
+        "protected": protected,
+        "absent": absent,
+        "failed": failed,
+    }
+    return result
+
+
 def _target_timeout_profile(target: str) -> dict:
     if _is_slow_target(target):
         return {
@@ -240,11 +613,27 @@ def whois_lookup(domain: str, scope: ScopeValidator) -> dict:
         r = subprocess.run(["whois", domain], capture_output=True, text=True, timeout=15)
         fields = {}
         for line in r.stdout.split("\n"):
-            for key in ["Registrar:", "Creation Date:", "Updated Date:", "Expiry Date:",
-                        "Name Server:", "Registrant Organization:", "Registrant Country:"]:
+            for key in [
+                "Registrar:",
+                "Sponsoring Registrar:",
+                "Creation Date:",
+                "Updated Date:",
+                "Expiry Date:",
+                "Name Server:",
+                "Registrant Organization:",
+                "Registrant Org:",
+                "Registrant Country:",
+                "OrgName:",
+                "Organization:",
+                "Admin Email:",
+                "Tech Email:",
+                "Registrant Email:",
+                "Registrar Abuse Contact Email:",
+                "Abuse Email:",
+            ]:
                 if line.strip().startswith(key):
                     fields[key.rstrip(":")] = line.split(":", 1)[1].strip()
-        return {"domain": domain, "fields": fields}
+        return {"domain": domain, "fields": fields, "org_osint": _parse_whois_org_osint(r.stdout, fields)}
     except Exception as e:
         return {"domain": domain, "error": str(e)}
 
@@ -257,6 +646,7 @@ def port_scan(target: str, ports: str, scope: ScopeValidator) -> dict:
             capture_output=True, text=True, timeout=120
         )
         open_ports = []
+        service_inventory = parse_service_banners(r.stdout)
         try:
             root = ET.fromstring(r.stdout)
             for port in root.findall(".//port"):
@@ -290,7 +680,9 @@ def port_scan(target: str, ports: str, scope: ScopeValidator) -> dict:
         for line in open_ports:
             tech_from_nmap.extend(_extract_tech(line))
         return {"target": target, "open_ports": open_ports,
-                "detected_tech": tech_from_nmap, "raw_output": r.stdout[:3000]}
+                "detected_tech": tech_from_nmap,
+                "service_inventory": service_inventory,
+                "raw_output": r.stdout[:3000]}
     except FileNotFoundError:
         return {"target": target, "error": "nmap not installed — brew install nmap"}
     except Exception as e:
@@ -536,50 +928,9 @@ def subdomain_enumerate(domain: str, wordlist: list, scope: ScopeValidator) -> d
 
 
 def fetch_cve_data(cpe_string: str) -> dict:
-    """
-    Query NVD for CVEs.
-    Versioned CPE (apache:http_server:2.4.49) → cpeName search
-    Unversioned  (apache:http_server)          → keywordSearch fallback
-    """
-    try:
-        parts = cpe_string.strip().split(":")
-        if len(parts) >= 3:
-            full_cpe = f"cpe:2.3:a:{cpe_string}"
-            url = (f"https://services.nvd.nist.gov/rest/json/cves/2.0"
-                   f"?cpeName={urllib.parse.quote(full_cpe)}&resultsPerPage=10")
-        else:
-            kw = cpe_string.replace(":", " ")
-            url = (f"https://services.nvd.nist.gov/rest/json/cves/2.0"
-                   f"?keywordSearch={urllib.parse.quote(kw)}&resultsPerPage=5")
+    from tools.cve_sources import fetch_cve_data as _fetch_cve_data
 
-        req = urllib.request.Request(url, headers={"User-Agent": "ARES/1.0", "Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-
-        vulns = []
-        for item in data.get("vulnerabilities", [])[:10]:
-            cve = item.get("cve", {})
-            metrics = cve.get("metrics", {})
-            score, severity = None, "UNKNOWN"
-            if "cvssMetricV31" in metrics:
-                m = metrics["cvssMetricV31"][0]
-                score, severity = m["cvssData"]["baseScore"], m["cvssData"]["baseSeverity"]
-            elif "cvssMetricV30" in metrics:
-                m = metrics["cvssMetricV30"][0]
-                score, severity = m["cvssData"]["baseScore"], m["cvssData"]["baseSeverity"]
-            elif "cvssMetricV2" in metrics:
-                m = metrics["cvssMetricV2"][0]
-                score, severity = m["cvssData"]["baseScore"], m.get("baseSeverity", "UNKNOWN")
-            vulns.append({
-                "id": cve.get("id"),
-                "description": cve.get("descriptions", [{}])[0].get("value", "")[:250],
-                "cvss_score": score,
-                "severity": severity,
-                "published": cve.get("published", "")[:10]
-            })
-        return {"cpe": cpe_string, "vulnerabilities": vulns, "total": data.get("totalResults", 0)}
-    except Exception as e:
-        return {"cpe": cpe_string, "error": str(e), "vulnerabilities": []}
+    return _fetch_cve_data(cpe_string)
 
 
 def check_common_misconfigs(url: str, scope: ScopeValidator) -> dict:

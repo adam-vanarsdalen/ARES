@@ -341,6 +341,7 @@ def _analyze_js(js_content: str, source_url: str = "") -> dict:
                 "type": label,
                 "value_preview": redacted,
                 "full_length": len(val),
+                "source_url": source_url,
                 "severity": "CRITICAL" if label in ("AWS Access Key", "Private Key", "Stripe Key") else "HIGH"
             })
 

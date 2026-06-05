@@ -95,6 +95,8 @@ class TestPriorityOneFlowFixes(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(pipeline, "port_scan", return_value={"open_ports": [], "detected_tech": []}),
+            patch.object(pipeline, "probe_version_disclosure", return_value={"base_url": "https://example.com", "paths": [], "findings": [], "coverage": {"paths_total": 18, "exposed": 0, "protected": 0, "absent": 18}}),
+            patch.object(pipeline, "tls_audit", return_value={"target": "example.com", "port": 443, "certificate": {}, "protocols": {}, "selected_cipher": "", "findings": [], "coverage": {}}),
             patch.object(pipeline, "map_to_mitre", side_effect=lambda items: items),
             patch.object(pipeline, "fetch_cve_data", return_value={"total": 0, "vulnerabilities": []}),
             patch.object(

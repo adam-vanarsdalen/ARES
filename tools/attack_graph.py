@@ -19,6 +19,12 @@ import hashlib
 import logging
 import re
 
+from utils.config import (
+    ATTACK_GRAPH_MAX_API_NODES,
+    ATTACK_GRAPH_MAX_FORM_NODES,
+    ATTACK_GRAPH_MAX_ROUTE_NODES,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +52,14 @@ ATTACK_TECHNIQUE_MAP = {
     "open_port_db": ("T1433", "Access Contact List"),
     "cloud_storage": ("T1530", "Data from Cloud Storage"),
     "internal_host": ("T1018", "Remote System Discovery"),
+    "route": ("T1083", "File and Directory Discovery"),
+    "form": ("T1595.002", "Active Scanning: Vulnerability Scanning"),
+    "api_endpoint": ("T1083", "File and Directory Discovery"),
+    "tls_finding": ("T1190", "Exploit Public-Facing Application"),
+    "internetdb_vuln": ("T1596", "Search Open Technical Databases"),
+    "version_disclosure": ("T1592.002", "Gather Victim Host Information: Software"),
+    "auth_panel": ("T1133", "External Remote Services"),
+    "verification_result": ("T1595.002", "Active Scanning: Vulnerability Scanning"),
 }
 
 # Finding severity weights for graph scoring
@@ -123,6 +137,14 @@ def _technique_for_node_id(node_id: str) -> tuple[str, str]:
         "active_exploit": "cve_rce",
         "js_endpoints": "js_endpoint",
         "subdomain": "subdomain",
+        "route": "route",
+        "form": "form",
+        "api_endpoint": "api_endpoint",
+        "tls_finding": "tls_finding",
+        "internetdb_vuln": "internetdb_vuln",
+        "version_disclosure": "version_disclosure",
+        "auth_panel": "auth_panel",
+        "verification_result": "verification_result",
     }.get(kind)
     if alias and alias in ATTACK_TECHNIQUE_MAP:
         return ATTACK_TECHNIQUE_MAP[alias]
@@ -224,18 +246,61 @@ class AttackGraph:
         }
 
 
+def _add_typed_node(graph: AttackGraph, node_id: str, node_type: str, label: str,
+                    severity: str = "INFO", data: dict = None,
+                    parent_id: str = None, relationship: str = "has") -> AttackNode:
+    node = graph._add_node(node_id, node_type, label, severity, data)
+    parent = parent_id or graph.root_id
+    if parent in graph.nodes:
+        graph.nodes[parent].connect(node_id, relationship)
+    return node
+
+
+def _record_overflow(graph: AttackGraph, key: str, overflow_count: int):
+    if overflow_count > 0:
+        graph.nodes[graph.root_id].data.setdefault("overflow_count", {})[key] = overflow_count
+
+
+def _is_apiish(value: str) -> bool:
+    lower = (value or "").lower()
+    return any(marker in lower for marker in ("/api", "graphql", "swagger", "openapi", "api-docs"))
+
+
+def _route_for_url(url: str) -> str:
+    if not url:
+        return "/"
+    if "://" not in url:
+        return url
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        route = parsed.path or "/"
+        if parsed.query:
+            route += "?" + parsed.query
+        return route
+    except Exception:
+        return url
+
+
+def _severity_from_status(status_code: int) -> str:
+    return "LOW" if status_code in (401, 403) else "INFO"
+
+
 def build_attack_graph(
     target: str,
     osint_data: dict,
     recon_data: dict,
     ct_data: dict = None,
     js_data: dict = None,
+    redteam_results: list[dict] = None,
 ) -> AttackGraph:
     """
     Build the attack graph from all collected intelligence.
     Connects assets → findings → potential pivots.
     """
     graph = AttackGraph(target)
+    js_data = js_data or osint_data.get("_js_data", {}) or {}
+    redteam_results = redteam_results or []
 
     # ── OSINT nodes ───────────────────────────────────────────────────────────
     tech_stack = _normalize_technology_stack(osint_data.get("technology_stack"))
@@ -252,6 +317,142 @@ def build_attack_graph(
         sid = _stable_id("subdomain", subdomain)
         graph.add_asset(sid, f"Subdomain: {subdomain}" + (f" ({ip})" if ip else ""),
                         relationship="has_subdomain")
+
+    # ── Discovered application surface ───────────────────────────────────────
+    route_ids: dict[str, str] = {}
+    pages = js_data.get("pages_crawled", []) or []
+    route_candidates = []
+    for page in pages:
+        if isinstance(page, dict):
+            route_candidates.append(page.get("url", ""))
+    for item in (js_data.get("html_routes", []) or []):
+        route_candidates.append(item)
+    for item in recon_data.get("_additional_targets", {}).get("targets", []) or []:
+        if isinstance(item, dict):
+            route_candidates.append(item.get("url", ""))
+    seen_routes = []
+    seen_route_keys = set()
+    for raw_route in route_candidates:
+        route = _route_for_url(str(raw_route or ""))
+        if not route or route in seen_route_keys:
+            continue
+        seen_route_keys.add(route)
+        seen_routes.append(route)
+    for idx, route in enumerate(seen_routes[:ATTACK_GRAPH_MAX_ROUTE_NODES]):
+        route_id = _stable_id("route", route, idx)
+        route_ids[route] = route_id
+        _add_typed_node(
+            graph,
+            route_id,
+            "route",
+            f"Route: {route}",
+            data={"route": route, "source": "crawl_or_additional_recon"},
+            relationship="has_route",
+        )
+    _record_overflow(graph, "route", max(0, len(seen_routes) - ATTACK_GRAPH_MAX_ROUTE_NODES))
+
+    forms = js_data.get("forms", []) or []
+    for idx, form in enumerate(forms[:ATTACK_GRAPH_MAX_FORM_NODES]):
+        action = form.get("action", "") if isinstance(form, dict) else str(form)
+        route = _route_for_url(action)
+        parent_id = route_ids.get(route) or graph.root_id
+        _add_typed_node(
+            graph,
+            _stable_id("form", action, idx),
+            "form",
+            f"Form: {form.get('method', 'GET') if isinstance(form, dict) else 'GET'} {route}",
+            data={
+                "action": action,
+                "method": form.get("method", "GET") if isinstance(form, dict) else "GET",
+                "fields": form.get("fields", []) if isinstance(form, dict) else [],
+                "source": "js_crawl",
+            },
+            parent_id=parent_id,
+            relationship="exposes_form",
+        )
+    _record_overflow(graph, "form", max(0, len(forms) - ATTACK_GRAPH_MAX_FORM_NODES))
+
+    api_candidates = []
+    for endpoint in js_data.get("endpoints", []) or []:
+        api_candidates.append({"url": str(endpoint), "source": "js_intelligence"})
+    for item in recon_data.get("_additional_targets", {}).get("targets", []) or []:
+        if isinstance(item, dict) and _is_apiish(str(item.get("url", ""))):
+            api_candidates.append({"url": item.get("url", ""), "source": item.get("source", "additional_recon")})
+    for result in redteam_results:
+        if result.get("test") == "api_endpoint_discovery":
+            for endpoint in result.get("result", {}).get("discovered", []) or []:
+                api_candidates.append({"url": endpoint.get("url", ""), "source": "redteam_api_endpoint_discovery", "status_code": endpoint.get("status_code")})
+    seen_api = []
+    seen_api_keys = set()
+    for item in api_candidates:
+        url = item.get("url", "")
+        if not url or url in seen_api_keys:
+            continue
+        seen_api_keys.add(url)
+        seen_api.append(item)
+    for idx, item in enumerate(seen_api[:ATTACK_GRAPH_MAX_API_NODES]):
+        api_route = _route_for_url(item.get("url", ""))
+        parent_id = route_ids.get(api_route) or graph.root_id
+        _add_typed_node(
+            graph,
+            _stable_id("api_endpoint", item.get("url", ""), idx),
+            "api_endpoint",
+            f"API Endpoint: {api_route}",
+            severity=_severity_from_status(item.get("status_code", 0) or 0),
+            data=item,
+            parent_id=parent_id,
+            relationship="exposes_api",
+        )
+    _record_overflow(graph, "api_endpoint", max(0, len(seen_api) - ATTACK_GRAPH_MAX_API_NODES))
+
+    passive_urls = osint_data.get("_passive_urls", {}) or {}
+    for idx, url in enumerate((passive_urls.get("discovered_urls", []) or [])[:ATTACK_GRAPH_MAX_ROUTE_NODES]):
+        _add_typed_node(
+            graph,
+            _stable_id("passive_url", url, idx),
+            "passive_url",
+            f"Passive URL: {_route_for_url(url)}",
+            data={"url": url, "source": "passive_url_discovery"},
+            relationship="has_passive_url",
+        )
+    _record_overflow(graph, "passive_url", max(0, len(passive_urls.get("discovered_urls", []) or []) - ATTACK_GRAPH_MAX_ROUTE_NODES))
+
+    internetdb = (osint_data.get("_external_enrichment", {}) or {}).get("internetdb", {}) or {}
+    if internetdb:
+        ip_value = internetdb.get("ip") or osint_data.get("collection_summary", {}).get("resolved_ip") or ""
+        ip_parent = graph.root_id
+        if ip_value:
+            ip_parent = _stable_id("ip", ip_value)
+            graph.add_asset(ip_parent, f"IP: {ip_value}", relationship="resolves_to")
+        enrichment_id = _stable_id("external_enrichment", "internetdb", ip_value, internetdb.get("status", ""))
+        _add_typed_node(
+            graph,
+            enrichment_id,
+            "external_enrichment",
+            "External enrichment: Shodan InternetDB",
+            severity="INFO",
+            data={
+                "source": "shodan_internetdb",
+                "status": internetdb.get("status", "unknown"),
+                "ports": internetdb.get("ports", []),
+                "hostnames": internetdb.get("hostnames", []),
+                "cpes": internetdb.get("cpes", []),
+            },
+            parent_id=ip_parent,
+            relationship="enriched_by",
+        )
+        for idx, vuln in enumerate(internetdb.get("vulns", []) or []):
+            vuln_id = vuln.get("id") if isinstance(vuln, dict) else str(vuln)
+            _add_typed_node(
+                graph,
+                _stable_id("internetdb_vuln", vuln_id, idx),
+                "internetdb_vuln",
+                f"InternetDB vuln: {vuln_id}",
+                severity="HIGH",
+                data=vuln if isinstance(vuln, dict) else {"id": vuln_id},
+                parent_id=enrichment_id,
+                relationship="reports_vuln",
+            )
 
     # ── CT subdomains ─────────────────────────────────────────────────────────
     if ct_data:
@@ -287,6 +488,26 @@ def build_attack_graph(
                 data={"chain_step": "credential_theft"},
                 relationship="enables"
             )
+
+    # ── Version disclosure / framework exposure ───────────────────────────────
+    version_disclosure = osint_data.get("_version_disclosure") or recon_data.get("_version_disclosure") or {}
+    for idx, finding in enumerate(version_disclosure.get("findings", [])):
+        risk = (finding.get("severity") or finding.get("risk", "info")).upper()
+        if risk not in {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+            risk = "INFO"
+        path = finding.get("path", "") or _route_for_url(finding.get("url", ""))
+        fid = _stable_id("version_disclosure", path, idx)
+        parent_id = route_ids.get(path) or graph.root_id
+        _add_typed_node(
+            graph,
+            fid,
+            "version_disclosure",
+            f"Framework exposure: {path}",
+            severity=risk,
+            data=finding,
+            parent_id=parent_id,
+            relationship="exposes_version_info",
+        )
 
     # ── CVE findings ──────────────────────────────────────────────────────────
     for idx, cve in enumerate(recon_data.get("cve_matches", [])):
@@ -327,14 +548,53 @@ def build_attack_graph(
             )
 
     # ── Recon findings ────────────────────────────────────────────────────────
-    for idx, port_line in enumerate(recon_data.get("_open_ports", [])):
-        service_id = _stable_id("service", port_line, idx)
+    structured_services = recon_data.get("_service_inventory", [])
+    service_ids: list[str] = []
+    for idx, service in enumerate(structured_services):
+        label = (
+            f"{service.get('port')}/{service.get('protocol', 'tcp')} "
+            f"{service.get('service', '')} {service.get('product', '')} {service.get('version', '')}"
+        ).strip()
+        service_id = _stable_id("service", label, idx)
+        service_ids.append(service_id)
         graph.add_asset(
             service_id,
-            f"Service: {port_line}",
+            f"Service: {label}",
             parent_id=graph.root_id,
-            data={"source": "port_scan"},
+            data={
+                "source": "port_scan",
+                "product": service.get("product", ""),
+                "version": service.get("version", ""),
+                "candidate_cpes": service.get("candidate_cpes", []),
+                "confidence": service.get("confidence", ""),
+            },
             relationship="exposes_service",
+        )
+    if not structured_services:
+        for idx, port_line in enumerate(recon_data.get("_open_ports", [])):
+            service_id = _stable_id("service", port_line, idx)
+            service_ids.append(service_id)
+            graph.add_asset(
+                service_id,
+                f"Service: {port_line}",
+                parent_id=graph.root_id,
+                data={"source": "port_scan"},
+                relationship="exposes_service",
+            )
+
+    tls_posture = recon_data.get("_tls_audit") or recon_data.get("tls_audit") or {}
+    tls_parent_id = service_ids[0] if service_ids else graph.root_id
+    for idx, finding in enumerate(tls_posture.get("findings", [])):
+        fid = _stable_id("tls_finding", finding.get("title", ""), idx)
+        _add_typed_node(
+            graph,
+            fid,
+            "tls_finding",
+            finding.get("title", "TLS finding"),
+            severity=finding.get("severity", "MEDIUM"),
+            data=finding,
+            parent_id=tls_parent_id,
+            relationship="has_tls_finding",
         )
 
     for severity_key, severity in (
@@ -406,6 +666,56 @@ def build_attack_graph(
                 relationship="exposes_api"
             )
 
+    # ── Redteam verification nodes ───────────────────────────────────────────
+    verification_tests = {
+        "open_redirect",
+        "http_methods",
+        "clickjacking",
+        "host_header_injection",
+        "api_endpoint_discovery",
+    }
+    for idx, item in enumerate(redteam_results):
+        test_name = item.get("test", "")
+        result = item.get("result", {}) or {}
+        if test_name == "auth_panel_discovery":
+            for panel_idx, panel in enumerate(result.get("panels", []) or []):
+                panel_url = panel.get("url", "")
+                route = _route_for_url(panel_url or panel.get("path", ""))
+                parent_id = route_ids.get(route) or graph.root_id
+                _add_typed_node(
+                    graph,
+                    _stable_id("auth_panel", panel_url or route, panel_idx),
+                    "auth_panel",
+                    f"Auth panel: {route}",
+                    severity=_severity_from_status(panel.get("status_code", 0) or 0),
+                    data={**panel, "manual_verification_needed": True},
+                    parent_id=parent_id,
+                    relationship="has_redteam_verification",
+                )
+            continue
+        if test_name not in verification_tests:
+            continue
+        confirmed = bool(
+            result.get("confirmed")
+            or result.get("reflected")
+            or result.get("findings")
+            or result.get("discovered")
+        )
+        severity = "MEDIUM" if confirmed and test_name in {"open_redirect", "http_methods", "clickjacking", "host_header_injection"} else "INFO"
+        base_url = result.get("base_url") or result.get("url") or ""
+        route = _route_for_url(base_url) if base_url else "/"
+        parent_id = route_ids.get(route) or graph.root_id
+        _add_typed_node(
+            graph,
+            _stable_id("verification_result", test_name, item.get("finding", ""), idx),
+            "verification_result",
+            f"Verification: {test_name.replace('_', ' ')}",
+            severity=severity,
+            data={"finding": item.get("finding", ""), "result": result},
+            parent_id=parent_id,
+            relationship="has_redteam_verification",
+        )
+
     return graph
 
 
@@ -419,7 +729,10 @@ def generate_kill_chains(graph: AttackGraph, ai_client, model: str) -> dict:
         n for n in graph.nodes.values()
         if n.severity in ("CRITICAL", "HIGH")
     ]
-    finding_nodes = [n for n in critical_nodes if n.type == "finding"]
+    finding_nodes = [
+        n for n in critical_nodes
+        if n.type in {"finding", "tls_finding", "internetdb_vuln", "version_disclosure", "verification_result"}
+    ]
 
     graph_summary = {
         "target": graph.target,
@@ -482,6 +795,7 @@ Generate 2-4 realistic kill chains based on the actual findings."""
     # Fallback: generate kill chains from graph structure directly
     chains = []
     critical_paths = graph.get_critical_paths()
+    has_high_or_critical_finding = bool(finding_nodes)
 
     for i, path in enumerate(critical_paths[:3]):
         path_nodes = [graph.nodes[nid] for nid in path if nid in graph.nodes]
@@ -501,15 +815,48 @@ Generate 2-4 realistic kill chains based on the actual findings."""
             "mitre_tactics": ["Initial Access", "Execution"]
         })
 
+    if not has_high_or_critical_finding:
+        review_nodes = [
+            n for n in graph.nodes.values()
+            if n.type in {"route", "form", "api_endpoint", "passive_url", "auth_panel"}
+        ]
+        review_steps = [
+            {
+                "step": idx + 1,
+                "action": f"Review discovered surface: {node.label}",
+                "technique": _technique_for_node_id(node.id)[0],
+                "finding": node.id,
+            }
+            for idx, node in enumerate(review_nodes[:5])
+        ]
+        review_chains = []
+        if review_steps:
+            review_chains.append({
+                "name": "Application Surface Review Paths",
+                "likelihood": "LOW",
+                "steps": review_steps,
+                "impact": "Potential attack surface identified for manual review; no compromise chain is supported by current evidence.",
+                "mitre_tactics": ["Reconnaissance"],
+            })
+        return {
+            "kill_chains": review_chains,
+            "worst_case_scenario": (
+                f"ARES discovered {len(review_nodes)} route/form/API surface nodes for {graph.target}, "
+                "but no high or critical finding supports a compromise claim. Review paths manually."
+            ),
+            "most_likely_attack": "Manual review of discovered paths" if review_steps else "No actionable chain identified",
+            "overall_chain_risk": "LOW",
+        }
+
     return {
         "kill_chains": chains,
         "worst_case_scenario": (
-            f"Target {graph.target} runs end-of-life software with known exploitable CVEs. "
-            f"Discovered {len(critical_nodes)} high/critical findings across {len(graph.nodes)} assets. "
-            f"Full compromise achievable via chained exploitation."
+            f"Target {graph.target} has {len(finding_nodes)} high/critical evidence-backed findings "
+            f"across {len(graph.nodes)} graph nodes. Chained exploitation requires manual validation "
+            "of the listed paths before asserting full compromise."
         ),
-        "most_likely_attack": chains[0]["name"] if chains else "Direct CVE exploitation",
-        "overall_chain_risk": "CRITICAL" if any(c["likelihood"] == "CRITICAL" for c in chains) else "HIGH"
+        "most_likely_attack": chains[0]["name"] if chains else "High-risk finding validation",
+        "overall_chain_risk": "CRITICAL" if any(c["likelihood"] == "CRITICAL" for c in chains) else "HIGH" if chains else "MEDIUM"
     }
 
 
