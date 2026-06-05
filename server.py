@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from sse_starlette.sse import EventSourceResponse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -43,10 +43,12 @@ from utils.config import (
     ENABLE_MANUAL_SECRET_VERIFY,
     OLLAMA_MODEL,
     PROFILE,
+    SECRET_VERIFY_REQUIRE_ADVANCED_PROFILE,
     PRUNE_INTERVAL,
     SESSION_TTL,
     as_dict as config_dict,
 )
+from tools.secret_workbench import verify_operator_secret
 from utils.session_store import (
     create_session,
     get_session,
@@ -181,7 +183,12 @@ class AssessmentSession(BaseModel):
 
 class ManualSecretVerifyRequest(BaseModel):
     type: str = "API Key"
-    secret_value: str = Field(min_length=1, max_length=4096)
+    provider: str = "generic"
+    profile: str = "advanced"
+    secret_value: Annotated[SecretStr, Field(min_length=1, max_length=4096)]
+    perform_metadata_check: bool = False
+    secret_access_key: SecretStr | None = None
+    session_token: SecretStr | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -440,12 +447,24 @@ async def stop_assessment(session_id: str):
 async def manual_verify_secret(req: ManualSecretVerifyRequest):
     if not ENABLE_MANUAL_SECRET_VERIFY:
         raise HTTPException(404, "Manual secret verification is disabled")
+    profile = resolve_profile(req.profile)
+    if SECRET_VERIFY_REQUIRE_ADVANCED_PROFILE and profile.value not in {"advanced", "custom"}:
+        raise HTTPException(403, "Manual secret verification requires advanced or custom profile")
+    try:
+        result = verify_operator_secret(
+            req.provider,
+            req.secret_value.get_secret_value(),
+            perform_metadata_check=req.perform_metadata_check,
+            secret_access_key=req.secret_access_key.get_secret_value() if req.secret_access_key else "",
+            session_token=req.session_token.get_secret_value() if req.session_token else "",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {
         "type": req.type,
-        "value_preview": _redacted_secret_preview(req.secret_value),
-        "not_persisted": True,
         "manual_only": True,
-        "real_provider_calls": False,
+        "real_provider_calls": bool(req.perform_metadata_check),
+        **result,
     }
 
 

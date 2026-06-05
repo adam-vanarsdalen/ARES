@@ -99,6 +99,9 @@ CVE_CACHE_TTL = _int("ARES_CVE_CACHE_TTL_S", 86400)
 ENABLE_VULNERS = _bool("ARES_ENABLE_VULNERS", False)
 VULNERS_API_KEY = _str("ARES_VULNERS_API_KEY", "")
 ENABLE_MANUAL_SECRET_VERIFY = _bool("ARES_ENABLE_MANUAL_SECRET_VERIFY", False)
+SECRET_VERIFY_REQUIRE_ADVANCED_PROFILE = _bool("ARES_SECRET_VERIFY_REQUIRE_ADVANCED_PROFILE", True)
+SECRET_VERIFY_ALLOWED_PROVIDERS = _list("ARES_SECRET_VERIFY_ALLOWED_PROVIDERS", "github,aws,stripe,generic")
+SECRET_VERIFY_STORE_RAW = False
 PROFILE = _str("ARES_PROFILE", "recon").lower()
 ENABLE_ADVANCED_VERIFICATION = _bool("ARES_ENABLE_ADVANCED_VERIFICATION", False)
 REQUIRE_ROE_FOR_ADVANCED = _bool("ARES_REQUIRE_ROE_FOR_ADVANCED", True)
@@ -159,6 +162,9 @@ def as_dict() -> dict:
         "cve_cache_ttl_s": CVE_CACHE_TTL,
         "enable_vulners": ENABLE_VULNERS,
         "enable_manual_secret_verify": ENABLE_MANUAL_SECRET_VERIFY,
+        "secret_verify_require_advanced_profile": SECRET_VERIFY_REQUIRE_ADVANCED_PROFILE,
+        "secret_verify_allowed_providers": SECRET_VERIFY_ALLOWED_PROVIDERS,
+        "secret_verify_store_raw": SECRET_VERIFY_STORE_RAW,
         "profile": PROFILE,
         "enable_advanced_verification": ENABLE_ADVANCED_VERIFICATION,
         "require_roe_for_advanced": REQUIRE_ROE_FOR_ADVANCED,

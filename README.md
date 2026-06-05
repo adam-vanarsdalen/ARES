@@ -200,7 +200,9 @@ curl -s \
 | `ARES_CVE_CACHE_TTL_S` | integer seconds | `86400` | In-memory CVE lookup cache TTL. |
 | `ARES_ENABLE_VULNERS` | boolean | `false` | Enables optional Vulners fallback when API key is configured. |
 | `ARES_VULNERS_API_KEY` | string | none | Optional Vulners API key. Never commit real values. |
-| `ARES_ENABLE_MANUAL_SECRET_VERIFY` | boolean | `false` | Enables the manual-only `/manual/verify-secret` stub. It never persists submitted values or calls provider APIs. |
+| `ARES_ENABLE_MANUAL_SECRET_VERIFY` | boolean | `false` | Enables the volatile `/manual/verify-secret` workbench. Raw values are never persisted. |
+| `ARES_SECRET_VERIFY_REQUIRE_ADVANCED_PROFILE` | boolean | `true` | Restricts the workbench to advanced/custom operator intent. |
+| `ARES_SECRET_VERIFY_ALLOWED_PROVIDERS` | comma list | `github,aws,stripe,generic` | Provider handlers enabled for volatile verification. |
 | `ARES_MAX_CONCURRENT_SESSIONS` | integer | `5` | Global cap on running assessments. |
 | `ARES_MAX_SESSIONS_PER_MINUTE` | integer | `10` | New assessment rate limit. |
 | `ARES_EVENT_QUEUE_SIZE` | integer | `1000` | In-memory SSE event queue size per session. |

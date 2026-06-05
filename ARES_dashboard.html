@@ -232,6 +232,9 @@ function App() {
   const [mode, setMode] = useState("full");
   const [profile, setProfile] = useState("recon");
   const [roePolicyPath, setRoePolicyPath] = useState("");
+  const [secretProvider, setSecretProvider] = useState("github");
+  const [volatileSecret, setVolatileSecret] = useState("");
+  const [secretVerifyResult, setSecretVerifyResult] = useState(null);
   const [tab, setTab] = useState("terminal");
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(false);
@@ -363,6 +366,28 @@ function App() {
       URL.revokeObjectURL(url);
     } catch (err) {
       addLog("WARN", `Report download failed: ${err.message}`, "red");
+    }
+  };
+
+  const verifyVolatileSecret = async () => {
+    if (!volatileSecret) return;
+    setSecretVerifyResult(null);
+    try {
+      const res = await fetch(`${apiBaseRef.current}/manual/verify-secret`, {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          type: `${secretProvider} credential`,
+          provider: secretProvider,
+          profile,
+          secret_value: volatileSecret,
+          perform_metadata_check: false,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setSecretVerifyResult(res.ok ? data : { error: data.detail || `HTTP ${res.status}` });
+    } finally {
+      setVolatileSecret("");
     }
   };
 
@@ -558,6 +583,31 @@ function App() {
               <label className="input-label">ROE POLICY PATH</label>
               <input className="input-field" placeholder="policies/roe.example.yaml" value={roePolicyPath} onChange={e => setRoePolicyPath(e.target.value)} disabled={running} />
             </div>
+          )}
+
+          {(profile === "advanced" || profile === "custom") && (
+            <>
+              <div className="section-label">Volatile Secret Workbench</div>
+              <div className="input-group">
+                <label className="input-label">PROVIDER</label>
+                <select className="input-field" value={secretProvider} onChange={e => setSecretProvider(e.target.value)} disabled={running}>
+                  <option value="github">GitHub</option>
+                  <option value="aws">AWS</option>
+                  <option value="stripe">Stripe</option>
+                  <option value="generic">Generic</option>
+                </select>
+              </div>
+              <div className="input-group">
+                <label className="input-label">VOLATILE VALUE</label>
+                <input className="input-field" type="password" autoComplete="off" value={volatileSecret} onChange={e => setVolatileSecret(e.target.value)} disabled={running} />
+              </div>
+              <button className="stop-btn" onClick={verifyVolatileSecret} disabled={!volatileSecret || running}>VERIFY FORMAT</button>
+              {secretVerifyResult && (
+                <div className="mode-help" style={{ color: secretVerifyResult.error ? "var(--red)" : "var(--green)" }}>
+                  {secretVerifyResult.error || `${secretVerifyResult.provider}: ${secretVerifyResult.token_format_valid ? "FORMAT VALID" : "FORMAT INVALID"} · NOT PERSISTED`}
+                </div>
+              )}
+            </>
           )}
 
           <button className="launch-btn" onClick={handleLaunch} disabled={running || !target.trim() || serverStatus !== "connected"}>
