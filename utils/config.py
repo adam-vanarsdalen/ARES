@@ -119,6 +119,7 @@ NUCLEI_MAX_TEMPLATES = _int("ARES_NUCLEI_MAX_TEMPLATES", 50)
 NUCLEI_TIMEOUT = _int("ARES_NUCLEI_TIMEOUT_S", 60)
 NUCLEI_REQUIRE_ROE_FOR_MODERATE = _bool("ARES_NUCLEI_REQUIRE_ROE_FOR_MODERATE", True)
 NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM = _bool("ARES_NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM", True)
+ENABLE_EXTERNAL_PLUGINS = _bool("ARES_ENABLE_EXTERNAL_PLUGINS", False)
 ROE_POLICY_PATH = _str("ARES_ROE_POLICY_PATH", "")
 
 SAFE_TARGETS = set(_list(
@@ -177,6 +178,7 @@ def as_dict() -> dict:
         "nuclei_timeout_s": NUCLEI_TIMEOUT,
         "nuclei_require_roe_for_moderate": NUCLEI_REQUIRE_ROE_FOR_MODERATE,
         "nuclei_require_allowlist_for_custom": NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM,
+        "enable_external_plugins": ENABLE_EXTERNAL_PLUGINS,
         "roe_policy_configured": bool(ROE_POLICY_PATH),
         "event_queue_size": EVENT_QUEUE_SIZE,
     }

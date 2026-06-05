@@ -155,6 +155,7 @@ curl -s \
 | `ARES_NUCLEI_TIMEOUT_S` | seconds | `60` | Total Nuclei subprocess timeout. |
 | `ARES_NUCLEI_REQUIRE_ROE_FOR_MODERATE` | boolean | `true` | Requires RoE for moderate profile. |
 | `ARES_NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM` | boolean | `true` | Requires template IDs for custom profile. |
+| `ARES_ENABLE_EXTERNAL_PLUGINS` | boolean | `false` | Enables explicitly installed external plugins; built-ins remain available. |
 | `ARES_OLLAMA_MODEL` | string | `qwen3.5:9b` | Ollama model used for synthesis and kill chain analysis. |
 | `ARES_OLLAMA_BASE_URL` | URL | `http://localhost:11434` | Preferred Ollama API base URL. Compose sets this to `http://ollama:11434`. |
 | `ARES_OLLAMA_BASE` | URL | `http://localhost:11434` | Legacy fallback name still accepted by config. |

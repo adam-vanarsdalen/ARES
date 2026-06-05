@@ -34,6 +34,7 @@ from utils.evidence_ledger import build_pipeline_evidence_ledger
 from utils.finding_lifecycle import initialize_findings
 from utils.confidence_matrix import downgrade_overclaimed_findings
 from utils.standards_mapping import attach_standards_mappings
+from plugins.registry import default_registry
 from utils.config import (
     ASSET_INVENTORY_MAX_HTTP_PROBES,
     ENABLE_NMAP,
@@ -1411,6 +1412,8 @@ class ARESPipeline:
             external_sources.append("NVD/OSV/Vulners CVE sources")
         if "epss_scoring" in tools:
             external_sources.append("FIRST EPSS")
+        if not default_registry.list_plugins():
+            default_registry.discover_builtin_plugins()
         return {
             "target": self.target,
             "scope": {"domains": list(self.scope.domains), "ip_ranges": list(self.scope.ip_ranges)},
@@ -1434,6 +1437,7 @@ class ARESPipeline:
             },
             "coverage_gaps": coverage_gaps,
             "external_sources_used": external_sources,
+            "available_plugins": default_registry.list_plugins(),
             "safety_flags": [
                 "authorized-scope-required",
                 "non-destructive-redteam-verification",
