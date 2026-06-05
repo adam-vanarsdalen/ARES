@@ -279,6 +279,8 @@ def generate_report(
                 md += f"- **{finding.get('severity', 'MEDIUM')}** {finding.get('title', 'TLS finding')}: {finding.get('description', '')}\n"
 
     prioritized = vuln_report.get("prioritized_findings", [])
+    evidence_ledger = redteam_report.get("evidence_ledger", [])
+    evidence_by_id = {item.get("evidence_id"): item for item in evidence_ledger}
     if prioritized:
         md += "\n### Prioritized Findings\n"
         for finding in prioritized[:8]:
@@ -289,6 +291,14 @@ def generate_report(
             if finding.get("affected"):
                 md += f" → `{finding.get('affected')}`"
             md += "\n"
+            linked = [evidence_by_id[ref] for ref in finding.get("evidence_refs", []) if ref in evidence_by_id]
+            for evidence in linked[:2]:
+                md += (
+                    f"  - Evidence `{evidence.get('evidence_id')}`: "
+                    f"{evidence.get('body_preview_redacted') or evidence.get('tool_name', '')}\n"
+                )
+                if evidence.get("reproduction_hint"):
+                    md += f"  - Reproduce: {evidence.get('reproduction_hint')}\n"
 
     # ── Red Team Results ──────────────────────────────────────────────────────
     md += "\n---\n\n## Phase 3: Red Team Results\n\n### Confirmed Vulnerabilities\n"
@@ -355,6 +365,10 @@ def generate_report(
                 md += "- Controls: " + "; ".join(simulation.get("controls_that_would_block", [])) + "\n"
             md += "\n"
 
+    if evidence_ledger:
+        md += "\n### Evidence Ledger\n"
+        md += f"{len(evidence_ledger)} redacted evidence records were captured. Raw secrets stored: `false`.\n"
+
     # ── Recommendations ───────────────────────────────────────────────────────
     md += "\n---\n\n## Recommendations\n\n"
     recs = redteam_report.get("recommendations", [])
@@ -418,6 +432,7 @@ def generate_report(
             "timestamp": timestamp,
             "overall_risk": risk_level,
             "run_manifest": run_manifest,
+            "evidence_ledger": evidence_ledger,
             "osint": osint_clean,
             "vulnerabilities": vuln_clean,
             "redteam": redteam_clean

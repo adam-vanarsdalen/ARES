@@ -30,6 +30,7 @@ from utils.evidence_model import (
 from utils.report_generator import generate_report
 from utils.capability_profiles import CapabilityProfile, profile_summary, resolve_profile
 from utils.roe import evaluate_capability_action, load_roe_policy
+from utils.evidence_ledger import build_pipeline_evidence_ledger
 from utils.config import (
     ASSET_INVENTORY_MAX_HTTP_PROBES,
     ENABLE_NMAP,
@@ -1349,6 +1350,20 @@ class ARESPipeline:
     def _finalize(self, osint, recon, redteam):
         self.log("ORCH", "Generating assessment report...", "blue")
         manifest = self._run_manifest(osint, recon, redteam)
+        run_id = str(self.session.get("id") or self.session.get("session_id") or hashlib.sha256(
+            f"{self.target}|{self.started_at}".encode()
+        ).hexdigest()[:16])
+        evidence_ledger = build_pipeline_evidence_ledger(
+            run_id,
+            self.profile.value,
+            self.target,
+            osint,
+            recon,
+            redteam,
+        )
+        redteam["evidence_ledger"] = evidence_ledger
+        manifest["run_id"] = run_id
+        manifest["evidence_record_count"] = len(evidence_ledger)
         osint["run_manifest"] = manifest
         recon["run_manifest"] = manifest
         redteam["run_manifest"] = manifest
