@@ -144,7 +144,17 @@ curl -s \
 | `ARES_ENABLE_LAB_EXPLOIT_SIMULATION` | boolean | `false` | Enables lab-profile simulation capabilities; real public targets remain blocked. |
 | `ARES_REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM` | boolean | `true` | Restricts lab simulation to localhost or RoE-declared lab targets. |
 | `ARES_LAB_MANIFEST_PATH` | path | `labs/lab_manifest.yaml` | Docker service, lab CIDR, and simulation scenario allowlist. |
-| `ARES_NUCLEI_PROFILE` | enum | `safe` | Requested Nuclei policy profile. Nuclei integration is added in a later capability pass. |
+| `ARES_ENABLE_NUCLEI` | boolean | `false` | Enables the policy-controlled Nuclei adapter. |
+| `ARES_NUCLEI_PROFILE` | enum | `safe` | Nuclei policy profile: `safe`, `moderate`, or `custom`. |
+| `ARES_NUCLEI_TEMPLATE_DIR` | path | none | Optional local template directory for metadata validation. |
+| `ARES_NUCLEI_ALLOWED_TEMPLATE_IDS` | comma list | none | Required explicit template allowlist for custom profile. |
+| `ARES_NUCLEI_ALLOWED_TAGS` | comma list | safe tags | Tags allowed by the safe profile. |
+| `ARES_NUCLEI_MODERATE_TAGS` | comma list | selected tags | Additional tags considered by moderate profile. |
+| `ARES_NUCLEI_BLOCKED_TAGS` | comma list | destructive tags | Tags always excluded from real-target runs. |
+| `ARES_NUCLEI_MAX_TEMPLATES` | integer | `50` | Maximum custom template IDs per run. |
+| `ARES_NUCLEI_TIMEOUT_S` | seconds | `60` | Total Nuclei subprocess timeout. |
+| `ARES_NUCLEI_REQUIRE_ROE_FOR_MODERATE` | boolean | `true` | Requires RoE for moderate profile. |
+| `ARES_NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM` | boolean | `true` | Requires template IDs for custom profile. |
 | `ARES_OLLAMA_MODEL` | string | `qwen3.5:9b` | Ollama model used for synthesis and kill chain analysis. |
 | `ARES_OLLAMA_BASE_URL` | URL | `http://localhost:11434` | Preferred Ollama API base URL. Compose sets this to `http://ollama:11434`. |
 | `ARES_OLLAMA_BASE` | URL | `http://localhost:11434` | Legacy fallback name still accepted by config. |

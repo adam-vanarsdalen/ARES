@@ -106,6 +106,16 @@ ENABLE_LAB_EXPLOIT_SIMULATION = _bool("ARES_ENABLE_LAB_EXPLOIT_SIMULATION", Fals
 REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM = _bool("ARES_REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM", True)
 LAB_MANIFEST_PATH = _str("ARES_LAB_MANIFEST_PATH", "labs/lab_manifest.yaml")
 NUCLEI_PROFILE = _str("ARES_NUCLEI_PROFILE", "safe").lower()
+ENABLE_NUCLEI = _bool("ARES_ENABLE_NUCLEI", False)
+NUCLEI_TEMPLATE_DIR = _str("ARES_NUCLEI_TEMPLATE_DIR", "")
+NUCLEI_ALLOWED_TEMPLATE_IDS = _list("ARES_NUCLEI_ALLOWED_TEMPLATE_IDS", "")
+NUCLEI_ALLOWED_TAGS = _list("ARES_NUCLEI_ALLOWED_TAGS", "exposure,misconfig,headers,tech,panel,ssl")
+NUCLEI_MODERATE_TAGS = _list("ARES_NUCLEI_MODERATE_TAGS", "cve,exposure,misconfig,token-spray-disabled")
+NUCLEI_BLOCKED_TAGS = _list("ARES_NUCLEI_BLOCKED_TAGS", "rce,dos,intrusive,bruteforce,credential,file-write,fuzz")
+NUCLEI_MAX_TEMPLATES = _int("ARES_NUCLEI_MAX_TEMPLATES", 50)
+NUCLEI_TIMEOUT = _int("ARES_NUCLEI_TIMEOUT_S", 60)
+NUCLEI_REQUIRE_ROE_FOR_MODERATE = _bool("ARES_NUCLEI_REQUIRE_ROE_FOR_MODERATE", True)
+NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM = _bool("ARES_NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM", True)
 ROE_POLICY_PATH = _str("ARES_ROE_POLICY_PATH", "")
 
 SAFE_TARGETS = set(_list(
@@ -156,6 +166,11 @@ def as_dict() -> dict:
         "require_local_target_for_lab_exploit_sim": REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM,
         "lab_manifest_path": LAB_MANIFEST_PATH,
         "nuclei_profile": NUCLEI_PROFILE,
+        "enable_nuclei": ENABLE_NUCLEI,
+        "nuclei_max_templates": NUCLEI_MAX_TEMPLATES,
+        "nuclei_timeout_s": NUCLEI_TIMEOUT,
+        "nuclei_require_roe_for_moderate": NUCLEI_REQUIRE_ROE_FOR_MODERATE,
+        "nuclei_require_allowlist_for_custom": NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM,
         "roe_policy_configured": bool(ROE_POLICY_PATH),
         "event_queue_size": EVENT_QUEUE_SIZE,
     }

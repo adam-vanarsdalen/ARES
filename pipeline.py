@@ -68,6 +68,7 @@ from tools.redteam_verification import (
     verification_result,
 )
 from tools.lab_simulation import run_lab_simulations
+from tools.nuclei_runner import run_nuclei
 from tools.epss_scoring import enrich_cves_with_epss, epss_summary
 from tools.attack_graph import build_attack_graph, generate_kill_chains, map_to_mitre
 
@@ -2143,6 +2144,19 @@ Return ONLY valid JSON — no markdown, no preamble:
         else:
             epss_sum = {}
 
+        nuclei_data = await asyncio.to_thread(
+            run_nuclei,
+            version_seed_url,
+            self.validator,
+            self.profile.value,
+            self.roe,
+        )
+        if nuclei_data.get("status") not in {"skipped", "blocked_by_roe"}:
+            self.emit("tool_result", {"tool": "nuclei", "data": nuclei_data})
+            self.log("RECON", f"  -> Nuclei {nuclei_data.get('profile', 'safe')}: {len(nuclei_data.get('findings', []))} matches", "orange")
+        elif nuclei_data.get("reason"):
+            self.log("RECON", f"  -> Nuclei skipped: {nuclei_data.get('reason')}", "dim")
+
         # AI vulnerability analysis
         self.log("RECON", "Analyzing vulnerabilities with AI...", "")
         vuln_report = await self._ai_vuln_analysis(target, osint_data, port_data, cve_results)
@@ -2152,6 +2166,25 @@ Return ONLY valid JSON — no markdown, no preamble:
         vuln_report["critical_findings"] = map_to_mitre(vuln_report.get("critical_findings", []))
         vuln_report["medium_findings"] = map_to_mitre(vuln_report.get("medium_findings", []))
         vuln_report["cve_matches"] = cve_results
+        vuln_report["nuclei"] = nuclei_data
+        for finding in nuclei_data.get("findings", []):
+            severity = finding.get("severity", "INFO").upper()
+            normalized = {
+                "title": finding.get("title", "Nuclei finding"),
+                "description": finding.get("description", ""),
+                "severity": severity,
+                "affected": finding.get("affected", ""),
+                "confidence": "HIGH",
+                "source": "nuclei",
+                "evidence": finding.get("evidence", {}),
+                "template_id": finding.get("template_id", ""),
+            }
+            if severity == "CRITICAL":
+                vuln_report.setdefault("critical_findings", []).append(normalized)
+            elif severity == "HIGH":
+                vuln_report.setdefault("high_findings", []).append(normalized)
+            elif severity in {"MEDIUM", "LOW"}:
+                vuln_report.setdefault("medium_findings", []).append(normalized)
         vuln_report["_version_disclosure"] = version_data
         vuln_report["version_disclosure"] = version_data
         vuln_report["_additional_targets"] = additional_results
