@@ -32,6 +32,7 @@ from utils.capability_profiles import CapabilityProfile, profile_summary, resolv
 from utils.roe import evaluate_capability_action, load_roe_policy
 from utils.evidence_ledger import build_pipeline_evidence_ledger
 from utils.finding_lifecycle import initialize_findings
+from utils.confidence_matrix import downgrade_overclaimed_findings
 from utils.config import (
     ASSET_INVENTORY_MAX_HTTP_PROBES,
     ENABLE_NMAP,
@@ -1350,6 +1351,12 @@ class ARESPipeline:
 
     def _finalize(self, osint, recon, redteam):
         self.log("ORCH", "Generating assessment report...", "blue")
+        all_findings = (
+            recon.get("critical_findings", [])
+            + recon.get("high_findings", [])
+            + recon.get("medium_findings", [])
+        )
+        downgrade_overclaimed_findings(all_findings, redteam)
         manifest = self._run_manifest(osint, recon, redteam)
         run_id = str(self.session.get("id") or self.session.get("session_id") or hashlib.sha256(
             f"{self.target}|{self.started_at}".encode()

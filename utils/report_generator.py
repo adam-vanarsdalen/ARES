@@ -298,6 +298,8 @@ def generate_report(
             if finding.get("affected"):
                 md += f" → `{finding.get('affected')}`"
             md += "\n"
+            if finding.get("confidence_rationale"):
+                md += f"  - Confidence: `{finding.get('confidence_class', finding.get('confidence', 'unknown'))}` — {finding.get('confidence_rationale')}\n"
             linked = [evidence_by_id[ref] for ref in finding.get("evidence_refs", []) if ref in evidence_by_id]
             for evidence in linked[:2]:
                 md += (
@@ -315,6 +317,17 @@ def generate_report(
                 f"{finding.get('title', 'Finding')} "
                 f"(`{finding.get('operational_priority', 'monitor')}`)\n"
             )
+
+    confirmed_findings = [finding for finding in reportable if finding.get("confidence_class") == "confirmed"]
+    indicator_findings = [finding for finding in reportable if finding.get("confidence_class") != "confirmed"]
+    if confirmed_findings:
+        md += "\n### Confirmed Findings\n"
+        for finding in confirmed_findings[:10]:
+            md += f"- {finding.get('title', 'Finding')}: {finding.get('confidence_rationale', '')}\n"
+    if indicator_findings:
+        md += "\n### Indicators Requiring Context\n"
+        for finding in indicator_findings[:10]:
+            md += f"- `{finding.get('confidence_class', 'indicator')}` {finding.get('title', 'Finding')}: {finding.get('confidence_rationale', '')}\n"
 
     manual_candidates = [
         finding for finding in reportable
