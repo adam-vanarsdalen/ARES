@@ -300,6 +300,14 @@ def generate_report(
             md += "\n"
             if finding.get("confidence_rationale"):
                 md += f"  - Confidence: `{finding.get('confidence_class', finding.get('confidence', 'unknown'))}` — {finding.get('confidence_rationale')}\n"
+            standards = finding.get("standards", {})
+            mapped_controls = []
+            for framework in ("attack", "owasp_asvs", "nist_800_53", "ssdf"):
+                for mapping in standards.get(framework, []):
+                    control_id = mapping.get("technique_id") or mapping.get("control_id") or mapping.get("practice_id")
+                    mapped_controls.append(f"{framework}: {control_id}")
+            if mapped_controls:
+                md += f"  - Standards: {', '.join(mapped_controls)}\n"
             linked = [evidence_by_id[ref] for ref in finding.get("evidence_refs", []) if ref in evidence_by_id]
             for evidence in linked[:2]:
                 md += (
@@ -328,6 +336,18 @@ def generate_report(
         md += "\n### Indicators Requiring Context\n"
         for finding in indicator_findings[:10]:
             md += f"- `{finding.get('confidence_class', 'indicator')}` {finding.get('title', 'Finding')}: {finding.get('confidence_rationale', '')}\n"
+
+    control_areas = sorted({
+        mapping.get("name", "")
+        for finding in reportable
+        for framework in ("owasp_asvs", "nist_800_53", "ssdf")
+        for mapping in finding.get("standards", {}).get(framework, [])
+        if mapping.get("name")
+    })
+    if control_areas:
+        md += "\n### Control Areas Affected\n"
+        md += ", ".join(control_areas[:12]) + ".\n\n"
+        md += "_Mappings are control-relevant evidence, not compliance certification._\n"
 
     manual_candidates = [
         finding for finding in reportable
