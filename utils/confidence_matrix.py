@@ -51,6 +51,24 @@ def downgrade_overclaimed_findings(findings: list[dict], evidence: dict | None =
             finding["confidence_rationale"] = "The relevant verification did not reproduce the reported condition."
             continue
 
+        if title.startswith("cve-") or source == "cve_correlation":
+            finding["confidence_class"] = "needs_manual_verification"
+            finding["confidence"] = "MEDIUM"
+            finding["confirmed"] = False
+            finding["false_positive_risk"] = "high"
+            finding["applicability_status"] = "unverified"
+            finding["confidence_rationale"] = (
+                "The CVE is correlated from an observed product/version banner. "
+                "The vulnerable feature or configuration has not been verified on this asset."
+            )
+            finding.setdefault(
+                "next_best_manual_test",
+                "Verify the affected feature and configuration against vendor guidance before reporting or patch prioritization.",
+            )
+            if finding.get("priority") in {"P1", "P2"}:
+                finding["priority"] = "P3"
+            continue
+
         if "cors" in title:
             cors_results = [item.get("result", {}) for item in verifications if item.get("test") == "cors"]
             exploitable = any(

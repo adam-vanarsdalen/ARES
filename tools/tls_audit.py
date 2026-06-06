@@ -164,7 +164,12 @@ def tls_audit(host_or_url: str, scope: ScopeValidator) -> dict:
         cert = {}
 
     result["protocols"] = _protocol_support(host, port)
-    result["coverage"]["protocols"] = "success"
+    protocol_values = list(result["protocols"].values())
+    if protocol_values and all(value == "error" for value in protocol_values):
+        result["coverage"]["protocols"] = "failed"
+        result["coverage"]["protocol_error"] = "all_protocol_checks_failed"
+    else:
+        result["coverage"]["protocols"] = "success"
 
     cert_summary = result["certificate"]
     if cert_summary.get("expired"):

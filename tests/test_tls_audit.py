@@ -79,3 +79,15 @@ def test_out_of_scope_tls_audit_is_blocked_before_socket_use():
             tls_audit("https://evil.test", _scope())
 
     handshake.assert_not_called()
+
+
+def test_all_protocol_errors_mark_tls_coverage_failed():
+    with (
+        mock.patch.object(tls, "_handshake", side_effect=TimeoutError("timeout")),
+        mock.patch.object(tls, "_protocol_support", return_value={p: "error" for p in tls.PROTOCOLS}),
+    ):
+        out = tls_audit("https://example.com", _scope())
+
+    assert out["coverage"]["certificate"] == "failed"
+    assert out["coverage"]["protocols"] == "failed"
+    assert out["coverage"]["protocol_error"] == "all_protocol_checks_failed"

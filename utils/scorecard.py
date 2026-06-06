@@ -50,12 +50,31 @@ def build_executive_scorecard(osint: dict, recon: dict, redteam: dict, manifest:
         for item in active
     ] or [0]))
 
-    mapped = sum(1 for item in active if any(
-        item.get("standards", {}).get(framework)
-        for framework in ("attack", "owasp_asvs", "nist_800_53", "ssdf")
-    ))
-    control_coverage = _clamp((mapped / max(1, len(active))) * 100)
-    remediation_urgency = max([item.get("reportability_score", 0) for item in active] or [0])
+    mode = str(manifest.get("mode") or "full")
+    expected_tools = {
+        "recon_only": {
+            "http_probe",
+            "port_scan",
+            "probe_version_disclosure",
+            "tls_audit",
+            "cve_lookup",
+            "epss_scoring",
+        },
+        "light_active": {"http_probe", "probe_version_disclosure", "tls_audit"},
+        "osint_only": {"dns_lookup", "whois_lookup", "cert_transparency", "http_probe"},
+        "passive_only": {"dns_lookup", "whois_lookup", "cert_transparency"},
+    }.get(mode, {"dns_lookup", "http_probe", "port_scan", "tls_audit", "cve_lookup"})
+    executed_tools = set(manifest.get("tools_executed", []))
+    completed = len(expected_tools & executed_tools)
+    gap_penalty = min(completed, len(coverage_gaps))
+    control_coverage = _clamp(((completed - gap_penalty) / max(1, len(expected_tools))) * 100)
+    confirmed_scores = [item.get("reportability_score", 0) for item in confirmed]
+    candidate_scores = [
+        min(60, item.get("reportability_score", 0))
+        for item in active
+        if item not in confirmed
+    ]
+    remediation_urgency = max(confirmed_scores + candidate_scores or [0])
     vdp_reportability = _clamp(sum(item.get("reportability_score", 0) for item in reportable[:5]) / max(1, min(5, len(reportable))))
     roe_loaded = bool((manifest.get("roe") or {}).get("loaded"))
     scope_confidence = _clamp(85 + (10 if roe_loaded else 0) - min(60, len(coverage_gaps) * 10))

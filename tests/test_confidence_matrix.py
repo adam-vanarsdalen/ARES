@@ -80,3 +80,22 @@ def test_api_403_is_surface_not_vulnerability():
     downgrade_overclaimed_findings([finding], {})
     assert finding["severity"] == "INFO"
     assert finding["confidence_class"] == "informational"
+
+
+def test_banner_correlated_cve_requires_applicability_verification():
+    finding = {
+        "title": "CVE-2014-4078",
+        "severity": "MEDIUM",
+        "priority": "P1",
+        "source": "cve_correlation",
+        "evidence_refs": ["fetch_cve_data"],
+        "confirmed": True,
+    }
+
+    downgrade_overclaimed_findings([finding], {})
+
+    assert finding["confidence_class"] == "needs_manual_verification"
+    assert finding["applicability_status"] == "unverified"
+    assert finding["confirmed"] is False
+    assert finding["priority"] == "P3"
+    assert finding["false_positive_risk"] == "high"

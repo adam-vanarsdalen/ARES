@@ -74,3 +74,21 @@ def test_false_positives_lower_active_risk_counts():
     }]), {}, {})
     assert false_positive["metrics"]["exposure_score"] < active["metrics"]["exposure_score"]
     assert false_positive["asset_exposure_summary"]["active_findings"] == 0
+
+
+def test_control_coverage_penalizes_inconclusive_checks():
+    manifest = {
+        "mode": "recon_only",
+        "tools_executed": [
+            "http_probe",
+            "port_scan",
+            "probe_version_disclosure",
+            "tls_audit",
+            "cve_lookup",
+            "epss_scoring",
+        ],
+        "coverage_gaps": ["tls_audit_inconclusive"],
+    }
+    scorecard = build_executive_scorecard({}, _recon([]), {}, manifest)
+
+    assert scorecard["metrics"]["control_coverage_score"] < 100

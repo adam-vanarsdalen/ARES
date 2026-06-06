@@ -69,6 +69,37 @@ class TestReportGenerator(unittest.TestCase):
             self.assertTrue(os.path.exists(path.replace(".md", ".sarif.json")))
             self.assertTrue(os.path.exists(path.replace(".md", ".cdx.json")))
 
+    def test_report_marks_inconclusive_tls_and_uses_current_brand(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = generate_report(
+                target="example.com",
+                osint_report={"summary": "Recon only.", "technology_stack": [], "subdomains": []},
+                vuln_report={
+                    "critical_findings": [],
+                    "high_findings": [],
+                    "medium_findings": [],
+                    "cve_matches": [],
+                    "tls_audit": {
+                        "target": "example.com",
+                        "port": 443,
+                        "protocols": {"TLSv1.2": "error"},
+                        "coverage": {"certificate": "failed", "protocols": "failed"},
+                    },
+                },
+                redteam_report={
+                    "overall_risk": "UNKNOWN",
+                    "confirmed_vulnerabilities": [],
+                    "proof_of_concepts": [],
+                    "recommendations": [],
+                },
+                output_dir=td,
+            )
+            rendered = open(path).read()
+
+        self.assertIn("TLS collection was inconclusive", rendered)
+        self.assertIn("Authorized Recon & Evidence System", rendered)
+        self.assertNotIn("Autonomous Recon & Exploitation System", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

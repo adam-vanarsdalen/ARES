@@ -907,9 +907,17 @@ def _ground_vuln_report(target, osint, ports, cves, report):
             "cvss_score": cve.get("cvss_score"),
             "affected": (osint.get("technology_stack") or ["Unknown"])[0] if osint.get("technology_stack") else "Unknown",
             "epss": cve.get("epss"),
+            "source": "cve_correlation",
+            "applicability_status": "unverified",
+            "confirmed": False,
+            "next_best_manual_test": (
+                "Confirm that the affected feature and configuration are present, then compare the exact product build "
+                "against the vendor advisory."
+            ),
         }, severity="CRITICAL" if (cve.get("cvss_score") or 0) >= 9.0 else "HIGH" if (cve.get("cvss_score") or 0) >= 7.0 else "MEDIUM",
-           evidence_refs=["fetch_cve_data"], confidence="HIGH" if cve.get("cvss_score") else "MEDIUM",
+           evidence_refs=["fetch_cve_data"], confidence="MEDIUM",
            exploitability="HIGH" if (cve.get("epss") or 0) >= 0.1 else "MEDIUM", business_impact="HIGH")
+        entry["priority"] = "P3"
         score = cve.get("cvss_score") or 0
         if score >= 9.0:
             critical_findings.append(entry)
@@ -982,6 +990,9 @@ def _ground_vuln_report(target, osint, ports, cves, report):
     coverage_gaps = list(osint.get("coverage_gaps", []))
     if ports.get("error"):
         coverage_gaps.append("port_scan_failed")
+    tls_coverage = tls_data.get("coverage", {})
+    if tls_coverage.get("certificate") == "failed" or tls_coverage.get("protocols") == "failed":
+        coverage_gaps.append("tls_audit_inconclusive")
     if cves:
         evidence_log.append(
             make_evidence(
@@ -1084,8 +1095,11 @@ def _ground_redteam_report(target, vulns, test_results, kill_chain_data, report)
     for cve in cve_matches[:5]:
         if cve.get("id"):
             recommendations.append({
-                "priority": severity_to_priority("CRITICAL" if (cve.get("cvss_score") or 0) >= 9.0 else "HIGH", cve.get("cvss_score"), cve.get("epss")),
-                "recommendation": f"Patch {cve['id']} on affected public-facing components.",
+                "priority": "P3",
+                "recommendation": (
+                    f"Verify whether {cve['id']} applies to the observed product build and enabled configuration. "
+                    "If applicable, follow the vendor remediation guidance and retest."
+                ),
             })
     for finding in vulns.get("critical_findings", []) + vulns.get("high_findings", []):
         title = finding.get("title", "").lower()
@@ -1095,7 +1109,21 @@ def _ground_redteam_report(target, vulns, test_results, kill_chain_data, report)
             recommendations.append({"priority": "P2", "recommendation": f"Restrict access to {finding.get('affected', 'sensitive paths')} and remove publicly exposed files."})
     for finding in vulns.get("medium_findings", []):
         if "missing security headers" in finding.get("title", "").lower():
-            recommendations.append({"priority": "P3", "recommendation": finding.get("description", "Implement missing security headers.")})
+            recommendations.append({
+                "priority": "P3",
+                "recommendation": (
+                    "Add and validate Content-Security-Policy, X-Frame-Options or CSP frame-ancestors, "
+                    "X-Content-Type-Options, Referrer-Policy, and Permissions-Policy as appropriate."
+                ),
+            })
+    if "tls_audit_inconclusive" in coverage_gaps:
+        recommendations.append({
+            "priority": "P3",
+            "recommendation": (
+                "Repeat TLS validation from a compatible network path or TLS client before drawing conclusions "
+                "about protocol and certificate posture."
+            ),
+        })
     if not recommendations:
         recommendations.append({"priority": "P3", "recommendation": "Repeat validation for slow or filtered endpoints and review manual testing coverage before treating the target as low risk."})
     elif coverage_gaps:
@@ -1392,6 +1420,14 @@ class ARESPipeline:
 
     def _finalize(self, osint, recon, redteam):
         self.log("ORCH", "Generating assessment report...", "blue")
+        if recon and not redteam:
+            redteam = _ground_redteam_report(
+                self.target,
+                recon,
+                test_results=[],
+                kill_chain_data={"kill_chains": []},
+                report={},
+            )
         all_findings = (
             recon.get("critical_findings", [])
             + recon.get("high_findings", [])
@@ -1409,6 +1445,13 @@ class ARESPipeline:
         )
         redteam["evidence_ledger"] = evidence_ledger
         initialize_findings({"recon": recon})
+        recon["prioritized_findings"] = sorted(
+            all_findings,
+            key=lambda item: (
+                {"P1": 0, "P2": 1, "P3": 2, "P4": 3}.get(item.get("priority", "P4"), 9),
+                -item.get("reportability_score", 0),
+            ),
+        )
         for evidence in evidence_ledger:
             self.audit_log.record(
                 "evidence_created",
