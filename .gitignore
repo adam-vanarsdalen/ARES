@@ -5,13 +5,17 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+.mypy_cache/
+.ruff_cache/
 *.egg-info/
 dist/
+*.zip
 build/
 .eggs/
 
 # Env
 .env
+.env.local
 .env.*
 !.env.example
 
@@ -22,6 +26,7 @@ build/
 reports/*
 !reports/.gitkeep
 ares.db
+*.db
 ares.db-shm
 ares.db-wal
 audit_logs/

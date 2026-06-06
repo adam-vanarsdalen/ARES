@@ -15,7 +15,7 @@ operator intent, audit records, and evidence capture.
 
 Do not commit virtualenvs or generated runtime outputs. Use
 `scripts/package_clean.sh` before sharing the repo with recruiters, employers,
-or reviewers.
+or reviewers. See [Clean Packaging for Sharing ARES](docs/PACKAGING.md).
 
 ## Capability Profiles
 
