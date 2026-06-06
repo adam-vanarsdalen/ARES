@@ -8,8 +8,6 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
-dist/
-*.zip
 build/
 .eggs/
 
@@ -32,13 +30,21 @@ ares.db-wal
 audit_logs/
 audit_logs/*.jsonl
 
+# Packaging
+dist/
+*.zip
+
 # macOS
 .DS_Store
 __MACOSX/
 
 # Local agent/runtime state
 .agent/
+
+# Test/cache
 .pytest_cache/
+.coverage
+htmlcov/
 
 # Claude artifact scaffolding
 ARES-OLLAMA/
