@@ -13,6 +13,14 @@ import ssl
 from ollama_compat import OllamaClient as Anthropic, DEFAULT_MODEL, ollama_chat
 from utils.config import OLLAMA_MAX_RETRIES, OLLAMA_TIMEOUT
 from utils.scope_validator import ScopeValidator, Scope
+from tools.redteam_verification import (
+    discover_auth_panels,
+    enumerate_api_endpoints,
+    test_clickjacking,
+    test_host_header_injection,
+    test_http_methods,
+    test_open_redirect,
+)
 
 client = Anthropic()
 OLLAMA_TIMEOUT_S = OLLAMA_TIMEOUT
@@ -27,12 +35,18 @@ You receive vulnerability intelligence from previous reconnaissance phases and y
 YOU MUST:
 - ONLY act against targets in defined scope
 - Perform NON-DESTRUCTIVE testing only — do not delete, modify, or exfiltrate data
+- In advanced/custom profile context, attempt at least one relevant non-destructive verification for each confirmed or evidence-backed recon finding
+- Distinguish confirmed, strongly_indicated, not_reproduced, blocked_by_roe, and needs_manual_followup
+- Prefer evidence-backed verification over speculation
 - Do NOT provide exploit payloads or step-by-step exploitation instructions
 - Log every action taken for the report
 
 YOU MUST NOT:
 - Test any target not explicitly in scope
+- Attempt credentials or use discovered credentials
+- Submit forms
 - Execute destructive payloads
+- Perform destructive writes
 - Exfiltrate real sensitive data
 - Perform DoS attacks
 
@@ -53,12 +67,68 @@ The report must be valid JSON matching this shape (no extra keys):
 
 REDTEAM_TOOLS = [
     {
-        "name": "discover_admin_panels",
-        "description": "Enumerate common admin/login panel paths (NO credential guessing; metadata only).",
+        "name": "test_open_redirect",
+        "description": "Verify candidate open redirects with a non-routable marker URL. Returns verification status, tested parameters, and the next manual test.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "In-scope endpoint URL to verify"}},
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "test_http_methods",
+        "description": "Perform non-destructive OPTIONS and TRACE method exposure checks. PUT/DELETE are not available through this agent tool.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "In-scope URL to check"}},
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "test_clickjacking",
+        "description": "Check X-Frame-Options and CSP frame-ancestors without submitting forms. Returns status and next manual framing test.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "In-scope page URL"}},
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "test_host_header_injection",
+        "description": "Check for reflection of a harmless invalid Host marker. Does not send credentials or modify server state.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "In-scope endpoint URL"}},
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "enumerate_api_endpoints",
+        "description": "Probe a capped built-in list of common API documentation and endpoint paths with GET. HTTP 401/403 confirms surface only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"base_url": {"type": "string", "description": "In-scope base URL"}},
+            "required": ["base_url"]
+        }
+    },
+    {
+        "name": "discover_auth_panels",
+        "description": "Enumerate common admin/login panel paths without credential attempts. Returns reachable protected surface and manual guidance.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "base_url": {"type": "string", "description": "Base URL (include scheme) e.g. https://example.com"}
+            },
+            "required": ["base_url"]
+        }
+    },
+    {
+        "name": "discover_admin_panels",
+        "description": "Compatibility alias for discover_auth_panels. No credential guessing or authentication attempts.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "base_url": {"type": "string", "description": "In-scope base URL"}
             },
             "required": ["base_url"]
         }
@@ -158,14 +228,28 @@ def test_cors_misconfiguration(url: str, scope: ScopeValidator) -> dict:
 
 def execute_tool(tool_name: str, tool_input: dict, scope: ScopeValidator) -> str:
     try:
-        if tool_name == "discover_admin_panels":
-            result = discover_admin_panels(tool_input["base_url"], scope)
+        if tool_name in {"discover_admin_panels", "discover_auth_panels"}:
+            result = discover_auth_panels(tool_input["base_url"], scope)
+        elif tool_name == "test_open_redirect":
+            result = test_open_redirect(tool_input["url"], scope)
+        elif tool_name == "test_http_methods":
+            result = test_http_methods(tool_input["url"], scope)
+        elif tool_name == "test_clickjacking":
+            result = test_clickjacking(tool_input["url"], scope)
+        elif tool_name == "test_host_header_injection":
+            result = test_host_header_injection(tool_input["url"], scope)
+        elif tool_name == "enumerate_api_endpoints":
+            result = enumerate_api_endpoints(tool_input["base_url"], scope)
         elif tool_name == "test_cors_misconfiguration":
             result = test_cors_misconfiguration(tool_input["url"], scope)
         elif tool_name == "compile_redteam_report":
             return json.dumps({"status": "report_compiled", "report": tool_input["report"]})
         else:
-            result = {"error": f"Unknown tool: {tool_name}"}
+            result = {
+                "status": "skipped",
+                "error": f"Unknown tool: {tool_name}",
+                "blocked": True,
+            }
         return json.dumps(result)
     except ValueError as e:
         return json.dumps({"error": str(e), "blocked": True})
@@ -188,14 +272,16 @@ class RedTeamAgent:
         """Run red team testing based on vulnerability report."""
         self.log("Starting authorized red team testing")
 
-        prompt = f"""Based on this vulnerability assessment, perform authorized red team testing.
-Focus on the highest-severity findings and attempt to confirm their exploitability.
+        prompt = f"""Based on this vulnerability assessment, perform authorized red team verification.
+Focus on evidence-backed findings and attempt to verify the reported condition without exploitation.
 
 VULNERABILITY REPORT:
 {json.dumps(vuln_report, indent=2)}
 
 Test each finding methodically. Document all attempts and results.
-Remember: NON-DESTRUCTIVE testing only. Confirm access, don't abuse it."""
+Never attempt credentials, submit forms, test discovered secrets, or perform writes.
+Classify outcomes as confirmed, strongly_indicated, not_reproduced, blocked_by_roe,
+or needs_manual_followup. Confirm evidence, not exploitability."""
 
         messages = [{"role": "user", "content": prompt}]
         max_iterations = 20
