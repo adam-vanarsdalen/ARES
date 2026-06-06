@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
+import warnings
 
 import yaml
 
@@ -17,14 +17,37 @@ MAPPING_FILES = {
 }
 
 
-@lru_cache(maxsize=1)
-def load_standards_mappings() -> dict:
-    root = Path(__file__).resolve().parent.parent / "mappings"
+def load_standards_mappings(mapping_dir: str | Path | None = None) -> dict:
+    root = Path(mapping_dir) if mapping_dir is not None else Path(__file__).resolve().parent.parent / "mappings"
     mappings = {}
+    load_warnings = []
+    if not root.is_dir():
+        message = f"Standards mapping directory is missing: {root}"
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+        return {
+            "mappings": {framework: {} for framework in MAPPING_FILES},
+            "warnings": [message],
+        }
     for framework, filename in MAPPING_FILES.items():
-        with (root / filename).open("r", encoding="utf-8") as handle:
-            mappings[framework] = yaml.safe_load(handle) or {}
-    return mappings
+        path = root / filename
+        if not path.is_file():
+            message = f"Standards mapping file is missing: {path}"
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
+            load_warnings.append(message)
+            mappings[framework] = {}
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                loaded = yaml.safe_load(handle) or {}
+            if not isinstance(loaded, dict):
+                raise ValueError("top-level YAML value must be a mapping")
+            mappings[framework] = loaded
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            message = f"Standards mapping file could not be loaded ({path}): {exc}"
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
+            load_warnings.append(message)
+            mappings[framework] = {}
+    return {"mappings": mappings, "warnings": load_warnings}
 
 
 def classify_finding_type(finding: dict) -> str:
@@ -34,24 +57,24 @@ def classify_finding_type(finding: dict) -> str:
         str(finding.get("source", "")),
     ]).lower()
     aliases = (
-        ("missing security header", "missing security headers"),
+        ("missing security header", "missing_security_headers"),
         ("clickjack", "clickjacking"),
-        ("cors", "cors misconfiguration"),
-        ("open redirect", "open redirect"),
-        ("actuator", "exposed actuator"),
-        ("phpinfo", "exposed phpinfo"),
-        ("version disclosure", "version disclosure"),
-        ("weak tls", "weak tls"),
-        ("api docs", "exposed api docs"),
-        ("swagger", "exposed api docs"),
-        ("openapi", "exposed api docs"),
-        ("secret", "exposed secrets"),
-        ("host header", "host header injection"),
-        ("api endpoint", "api endpoint exposure"),
-        ("cve-", "vulnerable service/cve"),
-        ("vulnerable service", "vulnerable service/cve"),
-        ("admin panel", "exposed admin panel"),
-        ("exposed path /admin", "exposed admin panel"),
+        ("cors", "cors_misconfiguration"),
+        ("open redirect", "open_redirect"),
+        ("actuator", "exposed_actuator"),
+        ("phpinfo", "exposed_phpinfo"),
+        ("version disclosure", "version_disclosure"),
+        ("weak tls", "weak_tls"),
+        ("api docs", "exposed_api_docs"),
+        ("swagger", "exposed_api_docs"),
+        ("openapi", "exposed_api_docs"),
+        ("secret", "exposed_secret"),
+        ("host header", "host_header_injection"),
+        ("api endpoint", "api_endpoint_exposure"),
+        ("cve-", "vulnerable_service"),
+        ("vulnerable service", "vulnerable_service"),
+        ("admin panel", "exposed_admin_panel"),
+        ("exposed path /admin", "exposed_admin_panel"),
     )
     for marker, finding_type in aliases:
         if marker in text:
@@ -59,10 +82,18 @@ def classify_finding_type(finding: dict) -> str:
     return "unknown"
 
 
-def map_finding_to_standards(finding: dict) -> dict:
+def map_finding_to_standards(finding: dict, mapping_dir: str | Path | None = None) -> dict:
     finding_type = classify_finding_type(finding)
-    mappings = load_standards_mappings()
-    output = {"attack": [], "owasp_asvs": [], "nist_800_53": [], "ssdf": [], "disclaimer": DISCLAIMER}
+    loaded = load_standards_mappings(mapping_dir)
+    mappings = loaded["mappings"]
+    output = {
+        "attack": [],
+        "owasp_asvs": [],
+        "nist_800_53": [],
+        "ssdf": [],
+        "warnings": loaded["warnings"],
+        "disclaimer": DISCLAIMER,
+    }
     if finding_type == "unknown":
         return output
     rationale = f"The observed `{finding_type}` condition is relevant to this control or adversary behavior."
@@ -71,9 +102,9 @@ def map_finding_to_standards(finding: dict) -> dict:
         if not entry:
             continue
         mapped = dict(entry)
-        mapped["rationale"] = rationale
+        mapped.setdefault("rationale", rationale)
         if framework == "attack":
-            mapped["confidence"] = finding.get("confidence_class", finding.get("confidence", "MEDIUM"))
+            mapped.setdefault("confidence", finding.get("confidence_class", finding.get("confidence", "MEDIUM")))
         output[framework].append(mapped)
     return output
 

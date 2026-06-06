@@ -1,14 +1,14 @@
-missing security headers: {practice_id: PW.5.1, name: Secure Defaults}
+missing_security_headers: {practice_id: PW.5.1, name: Secure Defaults}
 clickjacking: {practice_id: PW.5.1, name: Secure Defaults}
-cors misconfiguration: {practice_id: PW.5.1, name: Secure Defaults}
-open redirect: {practice_id: PW.5.1, name: Secure Defaults}
-exposed actuator: {practice_id: PW.9.1, name: Configure Software Securely}
-exposed phpinfo: {practice_id: PW.9.1, name: Configure Software Securely}
-version disclosure: {practice_id: PW.9.1, name: Configure Software Securely}
-weak tls: {practice_id: PW.9.1, name: Configure Software Securely}
-exposed api docs: {practice_id: PW.9.1, name: Configure Software Securely}
-exposed secrets: {practice_id: PW.6.1, name: Protect Secrets}
-host header injection: {practice_id: PW.5.1, name: Secure Defaults}
-api endpoint exposure: {practice_id: PW.5.1, name: Secure Defaults}
-vulnerable service/cve: {practice_id: RV.1.1, name: Identify and Confirm Vulnerabilities}
-exposed admin panel: {practice_id: PW.9.1, name: Configure Software Securely}
+cors_misconfiguration: {practice_id: PW.5.1, name: Secure Defaults}
+open_redirect: {practice_id: PW.5.1, name: Secure Defaults}
+exposed_actuator: {practice_id: PW.9.1, name: Configure Software Securely}
+exposed_phpinfo: {practice_id: PW.9.1, name: Configure Software Securely}
+version_disclosure: {practice_id: PW.9.1, name: Configure Software Securely}
+weak_tls: {practice_id: PW.9.1, name: Configure Software Securely}
+exposed_api_docs: {practice_id: PW.9.1, name: Configure Software Securely}
+exposed_secret: {practice_id: PW.6.1, name: Protect Secrets}
+host_header_injection: {practice_id: PW.5.1, name: Secure Defaults}
+api_endpoint_exposure: {practice_id: PW.5.1, name: Secure Defaults}
+vulnerable_service: {practice_id: RV.1.1, name: Identify and Confirm Vulnerabilities}
+exposed_admin_panel: {practice_id: PW.9.1, name: Configure Software Securely}

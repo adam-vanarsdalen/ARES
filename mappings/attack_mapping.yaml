@@ -1,14 +1,14 @@
-missing security headers: {technique_id: T1189, name: Drive-by Compromise}
+missing_security_headers: {technique_id: T1189, name: Drive-by Compromise, rationale: Missing browser protections can increase client-side attack exposure., confidence: low}
 clickjacking: {technique_id: T1189, name: Drive-by Compromise}
-cors misconfiguration: {technique_id: T1557, name: Adversary-in-the-Middle}
-open redirect: {technique_id: T1566.002, name: Spearphishing Link}
-exposed actuator: {technique_id: T1190, name: Exploit Public-Facing Application}
-exposed phpinfo: {technique_id: T1592.002, name: Gather Victim Host Information}
-version disclosure: {technique_id: T1592.002, name: Gather Victim Host Information}
-weak tls: {technique_id: T1557, name: Adversary-in-the-Middle}
-exposed api docs: {technique_id: T1595.002, name: Vulnerability Scanning}
-exposed secrets: {technique_id: T1552, name: Unsecured Credentials}
-host header injection: {technique_id: T1189, name: Drive-by Compromise}
-api endpoint exposure: {technique_id: T1595.002, name: Vulnerability Scanning}
-vulnerable service/cve: {technique_id: T1190, name: Exploit Public-Facing Application}
-exposed admin panel: {technique_id: T1190, name: Exploit Public-Facing Application}
+cors_misconfiguration: {technique_id: T1557, name: Adversary-in-the-Middle}
+open_redirect: {technique_id: T1566.002, name: Spearphishing Link}
+exposed_actuator: {technique_id: T1190, name: Exploit Public-Facing Application}
+exposed_phpinfo: {technique_id: T1592.002, name: Gather Victim Host Information}
+version_disclosure: {technique_id: T1592.002, name: Gather Victim Host Information}
+weak_tls: {technique_id: T1557, name: Adversary-in-the-Middle}
+exposed_api_docs: {technique_id: T1595.002, name: Vulnerability Scanning}
+exposed_secret: {technique_id: T1552, name: Unsecured Credentials}
+host_header_injection: {technique_id: T1189, name: Drive-by Compromise}
+api_endpoint_exposure: {technique_id: T1595.002, name: Vulnerability Scanning}
+vulnerable_service: {technique_id: T1190, name: Exploit Public-Facing Application}
+exposed_admin_panel: {technique_id: T1190, name: Exploit Public-Facing Application}

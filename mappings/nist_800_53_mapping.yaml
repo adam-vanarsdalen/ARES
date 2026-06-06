@@ -1,14 +1,14 @@
-missing security headers: {control_id: SC-8, name: Transmission Confidentiality and Integrity}
+missing_security_headers: {control_id: SC-8, name: Transmission Confidentiality and Integrity}
 clickjacking: {control_id: SI-10, name: Information Input Validation}
-cors misconfiguration: {control_id: AC-3, name: Access Enforcement}
-open redirect: {control_id: SI-10, name: Information Input Validation}
-exposed actuator: {control_id: CM-7, name: Least Functionality}
-exposed phpinfo: {control_id: CM-7, name: Least Functionality}
-version disclosure: {control_id: RA-5, name: Vulnerability Monitoring and Scanning}
-weak tls: {control_id: SC-13, name: Cryptographic Protection}
-exposed api docs: {control_id: AC-3, name: Access Enforcement}
-exposed secrets: {control_id: IA-5, name: Authenticator Management}
-host header injection: {control_id: SI-10, name: Information Input Validation}
-api endpoint exposure: {control_id: AC-3, name: Access Enforcement}
-vulnerable service/cve: {control_id: SI-2, name: Flaw Remediation}
-exposed admin panel: {control_id: AC-6, name: Least Privilege}
+cors_misconfiguration: {control_id: AC-3, name: Access Enforcement}
+open_redirect: {control_id: SI-10, name: Information Input Validation}
+exposed_actuator: {control_id: CM-7, name: Least Functionality}
+exposed_phpinfo: {control_id: CM-7, name: Least Functionality}
+version_disclosure: {control_id: RA-5, name: Vulnerability Monitoring and Scanning}
+weak_tls: {control_id: SC-13, name: Cryptographic Protection}
+exposed_api_docs: {control_id: AC-3, name: Access Enforcement}
+exposed_secret: {control_id: IA-5, name: Authenticator Management}
+host_header_injection: {control_id: SI-10, name: Information Input Validation}
+api_endpoint_exposure: {control_id: AC-3, name: Access Enforcement}
+vulnerable_service: {control_id: SI-2, name: Flaw Remediation}
+exposed_admin_panel: {control_id: AC-6, name: Least Privilege}

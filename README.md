@@ -26,6 +26,10 @@ operator intent, audit records, and evidence capture.
 See [docs/CAPABILITY_PROFILES.md](docs/CAPABILITY_PROFILES.md) and
 [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
 
+Full standards output uses the YAML catalogs under `mappings/`. Missing or
+malformed catalogs degrade to empty mappings with warnings and never abort an
+assessment.
+
 ## Capabilities
 
 | Area | What ARES Does |

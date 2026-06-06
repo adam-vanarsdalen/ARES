@@ -1,14 +1,14 @@
-missing security headers: {control_id: V14.4.1, name: HTTP Security Headers}
+missing_security_headers: {control_id: V14.4.1, name: HTTP Security Headers}
 clickjacking: {control_id: V14.4.3, name: Browser Framing Protection}
-cors misconfiguration: {control_id: V14.5.3, name: Cross-Origin Resource Sharing}
-open redirect: {control_id: V5.1.5, name: Redirect Validation}
-exposed actuator: {control_id: V14.3.2, name: Debug and Administrative Interfaces}
-exposed phpinfo: {control_id: V14.3.2, name: Debug and Administrative Interfaces}
-version disclosure: {control_id: V14.3.3, name: Version Disclosure}
-weak tls: {control_id: V9.1.1, name: Communications Security}
-exposed api docs: {control_id: V13.1.1, name: API Documentation Exposure}
-exposed secrets: {control_id: V8.3.4, name: Sensitive Data Protection}
-host header injection: {control_id: V5.1.2, name: Input Validation}
-api endpoint exposure: {control_id: V13.1.4, name: API Access Control}
-vulnerable service/cve: {control_id: V14.2.2, name: Dependency Currency}
-exposed admin panel: {control_id: V4.1.1, name: Access Control}
+cors_misconfiguration: {control_id: V14.5.3, name: Cross-Origin Resource Sharing}
+open_redirect: {control_id: V5.1.5, name: Redirect Validation}
+exposed_actuator: {control_id: V14.3.2, name: Debug and Administrative Interfaces}
+exposed_phpinfo: {control_id: V14.3.2, name: Debug and Administrative Interfaces}
+version_disclosure: {control_id: V14.3.3, name: Version Disclosure}
+weak_tls: {control_id: V9.1.1, name: Communications Security}
+exposed_api_docs: {control_id: V13.1.1, name: API Documentation Exposure}
+exposed_secret: {control_id: V8.3.4, name: Sensitive Data Protection}
+host_header_injection: {control_id: V5.1.2, name: Input Validation}
+api_endpoint_exposure: {control_id: V13.1.4, name: API Access Control}
+vulnerable_service: {control_id: V14.2.2, name: Dependency Currency}
+exposed_admin_panel: {control_id: V4.1.1, name: Access Control}
