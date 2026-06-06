@@ -14,6 +14,7 @@ EXPECTED_TOOLS = {
     "discover_auth_panels",
     "discover_admin_panels",
     "test_cors_misconfiguration",
+    "verify_operator_secret",
     "compile_redteam_report",
 }
 
@@ -68,3 +69,66 @@ def test_scope_denial_is_returned_as_blocked_error():
     ))
     assert result["blocked"] is True
     assert "scope" in result["error"].lower()
+
+
+def test_redacted_secret_does_not_trigger_workbench_verification():
+    with (
+        patch.object(redteam_agent, "ENABLE_MANUAL_SECRET_VERIFY", True),
+        patch.object(redteam_agent, "verify_operator_secret") as verifier,
+    ):
+        result = json.loads(redteam_agent.execute_tool(
+            "verify_operator_secret",
+            {"provider": "github"},
+            _scope(),
+            {"provider": "github", "value_preview": "ghp_...1234"},
+        ))
+
+    verifier.assert_not_called()
+    assert result["status"] == "needs_manual_verification"
+    assert result["raw_secret_stored"] is False
+
+
+def test_operator_supplied_volatile_secret_can_use_mocked_workbench():
+    raw_value = "operator-supplied-only"
+    workbench_result = {
+        "verification_source": "operator_supplied",
+        "raw_secret_stored": False,
+        "rotation_recommended": True,
+    }
+    with (
+        patch.object(redteam_agent, "ENABLE_MANUAL_SECRET_VERIFY", True),
+        patch.object(
+            redteam_agent,
+            "verify_operator_secret",
+            return_value=workbench_result,
+        ) as verifier,
+    ):
+        result = json.loads(redteam_agent.execute_tool(
+            "verify_operator_secret",
+            {"provider": "generic", "perform_metadata_check": False},
+            _scope(),
+            {"provider": "generic", "secret_value": raw_value},
+        ))
+
+    verifier.assert_called_once_with(
+        "generic",
+        raw_value,
+        perform_metadata_check=False,
+        secret_access_key="",
+        session_token="",
+    )
+    assert raw_value not in json.dumps(result)
+    assert result["verification_source"] == "operator_supplied"
+
+
+def test_agent_prompt_sanitizer_removes_raw_secret_fields():
+    raw_value = "ghp_operator_supplied_value_must_not_leave_process"
+    sanitized = redteam_agent._sanitize_report_secrets({
+        "title": "Exposed token",
+        "secret_value": raw_value,
+        "nested": {"token": raw_value, "value_preview": "ghp_...cess"},
+    })
+
+    rendered = json.dumps(sanitized)
+    assert raw_value not in rendered
+    assert sanitized["nested"]["value_preview"] == "ghp_...cess"

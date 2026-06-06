@@ -11,8 +11,9 @@ import urllib.request
 import urllib.parse
 import ssl
 from ollama_compat import OllamaClient as Anthropic, DEFAULT_MODEL, ollama_chat
-from utils.config import OLLAMA_MAX_RETRIES, OLLAMA_TIMEOUT
+from utils.config import ENABLE_MANUAL_SECRET_VERIFY, OLLAMA_MAX_RETRIES, OLLAMA_TIMEOUT
 from utils.scope_validator import ScopeValidator, Scope
+from tools.secret_workbench import verify_operator_secret
 from tools.redteam_verification import (
     discover_auth_panels,
     enumerate_api_endpoints,
@@ -24,6 +25,20 @@ from tools.redteam_verification import (
 
 client = Anthropic()
 OLLAMA_TIMEOUT_S = OLLAMA_TIMEOUT
+_RAW_SECRET_KEYS = {
+    "access_token",
+    "api_key",
+    "key",
+    "password",
+    "raw",
+    "raw_secret",
+    "secret",
+    "secret_access_key",
+    "secret_value",
+    "session_token",
+    "token",
+    "value",
+}
 
 REDTEAM_SYSTEM_PROMPT = """You are ARES-REDTEAM, a verification-only security assessment agent.
 
@@ -38,6 +53,10 @@ YOU MUST:
 - In advanced/custom profile context, attempt at least one relevant non-destructive verification for each confirmed or evidence-backed recon finding
 - Distinguish confirmed, strongly_indicated, not_reproduced, blocked_by_roe, and needs_manual_followup
 - Prefer evidence-backed verification over speculation
+- Treat redacted exposed keys, tokens, and secrets as high-priority manual verification candidates
+- Mark discovered or redacted secret findings needs_manual_verification and recommend rotation
+- Use verify_operator_secret only when an operator-supplied volatile secret is available in the workbench context
+- Never reveal or persist a raw secret value
 - Do NOT provide exploit payloads or step-by-step exploitation instructions
 - Log every action taken for the report
 
@@ -49,6 +68,7 @@ YOU MUST NOT:
 - Perform destructive writes
 - Exfiltrate real sensitive data
 - Perform DoS attacks
+- Attempt to verify a redacted or discovered secret value
 
 Think like a professional penetration tester bound by rules of engagement.
 
@@ -145,6 +165,24 @@ REDTEAM_TOOLS = [
         }
     },
     {
+        "name": "verify_operator_secret",
+        "description": "Verify metadata for an operator-supplied volatile secret already present in the manual workbench context. Never accepts or uses redacted/discovered stored values and never persists the secret.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Provider for the operator-supplied workbench value",
+                },
+                "perform_metadata_check": {
+                    "type": "boolean",
+                    "description": "Whether to perform the provider's metadata-only verification",
+                },
+            },
+            "required": ["provider"],
+        },
+    },
+    {
         "name": "compile_redteam_report",
         "description": "Compile final red team assessment report. Call when testing is complete.",
         "input_schema": {
@@ -156,6 +194,20 @@ REDTEAM_TOOLS = [
         }
     }
 ]
+
+
+def _sanitize_report_secrets(value):
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            normalized = str(key).lower()
+            if normalized in _RAW_SECRET_KEYS or normalized.startswith("raw_"):
+                continue
+            sanitized[key] = _sanitize_report_secrets(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_report_secrets(item) for item in value]
+    return value
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -226,7 +278,12 @@ def test_cors_misconfiguration(url: str, scope: ScopeValidator) -> dict:
         return {"url": url, "error": str(e)}
 
 
-def execute_tool(tool_name: str, tool_input: dict, scope: ScopeValidator) -> str:
+def execute_tool(
+    tool_name: str,
+    tool_input: dict,
+    scope: ScopeValidator,
+    volatile_secret_context: dict | None = None,
+) -> str:
     try:
         if tool_name in {"discover_admin_panels", "discover_auth_panels"}:
             result = discover_auth_panels(tool_input["base_url"], scope)
@@ -242,6 +299,25 @@ def execute_tool(tool_name: str, tool_input: dict, scope: ScopeValidator) -> str
             result = enumerate_api_endpoints(tool_input["base_url"], scope)
         elif tool_name == "test_cors_misconfiguration":
             result = test_cors_misconfiguration(tool_input["url"], scope)
+        elif tool_name == "verify_operator_secret":
+            context = volatile_secret_context or {}
+            if not ENABLE_MANUAL_SECRET_VERIFY or not context.get("secret_value"):
+                result = {
+                    "status": "needs_manual_verification",
+                    "manual_verification_required": True,
+                    "rotation_recommended": True,
+                    "raw_secret_stored": False,
+                    "reason": "No enabled operator-supplied volatile secret context is available.",
+                }
+            else:
+                provider = str(tool_input.get("provider") or context.get("provider") or "generic")
+                result = verify_operator_secret(
+                    provider,
+                    context["secret_value"],
+                    perform_metadata_check=bool(tool_input.get("perform_metadata_check", False)),
+                    secret_access_key=str(context.get("secret_access_key") or ""),
+                    session_token=str(context.get("session_token") or ""),
+                )
         elif tool_name == "compile_redteam_report":
             return json.dumps({"status": "report_compiled", "report": tool_input["report"]})
         else:
@@ -258,10 +334,16 @@ def execute_tool(tool_name: str, tool_input: dict, scope: ScopeValidator) -> str
 
 
 class RedTeamAgent:
-    def __init__(self, scope: Scope, verbose: bool = True):
+    def __init__(
+        self,
+        scope: Scope,
+        verbose: bool = True,
+        volatile_secret_context: dict | None = None,
+    ):
         self.scope = scope
         self.validator = ScopeValidator(scope)
         self.verbose = verbose
+        self.volatile_secret_context = volatile_secret_context or {}
         self.final_report = None
 
     def log(self, msg: str):
@@ -272,14 +354,24 @@ class RedTeamAgent:
         """Run red team testing based on vulnerability report."""
         self.log("Starting authorized red team testing")
 
+        secret_context_status = (
+            f"available for provider {self.volatile_secret_context.get('provider', 'generic')}"
+            if self.volatile_secret_context.get("secret_value")
+            else "not available"
+        )
+        safe_vuln_report = _sanitize_report_secrets(vuln_report)
         prompt = f"""Based on this vulnerability assessment, perform authorized red team verification.
 Focus on evidence-backed findings and attempt to verify the reported condition without exploitation.
 
 VULNERABILITY REPORT:
-{json.dumps(vuln_report, indent=2)}
+{json.dumps(safe_vuln_report, indent=2)}
+
+OPERATOR-SUPPLIED VOLATILE SECRET CONTEXT: {secret_context_status}
 
 Test each finding methodically. Document all attempts and results.
-Never attempt credentials, submit forms, test discovered secrets, or perform writes.
+Redacted or discovered secrets require manual verification and rotation guidance. Only the
+verify_operator_secret tool may use an available operator-supplied volatile workbench value.
+Never attempt credentials, submit forms, test discovered secrets, reveal raw values, or perform writes.
 Classify outcomes as confirmed, strongly_indicated, not_reproduced, blocked_by_roe,
 or needs_manual_followup. Confirm evidence, not exploitability."""
 
@@ -311,7 +403,12 @@ or needs_manual_followup. Confirm evidence, not exploitability."""
                 for block in response.content:
                     if block.type == "tool_use":
                         self.log(f"Testing: {block.name}")
-                        result = execute_tool(block.name, block.input, self.validator)
+                        result = execute_tool(
+                            block.name,
+                            block.input,
+                            self.validator,
+                            self.volatile_secret_context,
+                        )
                         parsed = json.loads(result)
                         if parsed.get("status") == "report_compiled":
                             report_obj = parsed.get("report") or {}

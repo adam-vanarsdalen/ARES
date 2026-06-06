@@ -33,7 +33,9 @@ def test_secret_verification_queue_never_stores_raw_secret():
     assert len(queue) == 1
     assert queue[0]["raw_secret_stored"] is False
     assert queue[0]["manual_verification"] is True
+    assert queue[0]["manual_verification_required"] is True
     assert queue[0]["rotation_recommended"] is True
+    assert queue[0]["verification_source"] == "discovered_redacted"
     assert RAW_AWS_KEY not in json.dumps(queue)
     assert "sts:GetCallerIdentity" not in queue[0]["recommended_safe_check"]
 
@@ -110,6 +112,7 @@ def test_full_secret_never_appears_in_markdown_or_json_reports():
 
     assert "sk_" + "live_" + "abcdefghijklmnopqrstuvwxyz123456" not in combined
     assert all(item["raw_secret_stored"] is False for item in queue)
+    assert "needs_manual_verification" in combined
 
 
 def _reload_server(manual_secret_verify: str):

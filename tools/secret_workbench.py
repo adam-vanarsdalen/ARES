@@ -114,7 +114,11 @@ def verify_operator_secret(
         "account_identity_redacted": metadata.get("identity_redacted", ""),
         "reason": metadata.get("reason", ""),
         "rotation_recommendation": recommendation,
+        "rotation_recommended": True,
+        "manual_verification_required": False,
+        "verification_source": "operator_supplied",
         "not_persisted": True,
+        "raw_secret_stored": False,
         "raw_value_stored": False,
         "automatic_discovered_secret_use": False,
     }

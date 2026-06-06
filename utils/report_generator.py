@@ -177,6 +177,11 @@ def generate_report(
                 f"from `{item.get('source_url', '') or 'unknown source'}` "
                 f"[confidence={item.get('confidence', 'MEDIUM')}, preview=`{item.get('value_preview', '')}`]\n"
             )
+            md += (
+                "  Status: needs_manual_verification; "
+                f"rotation_recommended={item.get('rotation_recommended', True)}; "
+                f"raw_secret_stored={item.get('raw_secret_stored', False)}\n"
+            )
             md += f"  Safe check: {item.get('recommended_safe_check', '')}\n"
 
     # ── Vulnerability Assessment ──────────────────────────────────────────────

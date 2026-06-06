@@ -21,6 +21,8 @@ def test_github_metadata_result_is_redacted_and_raw_value_absent():
     rendered = json.dumps(result)
     assert result["metadata_result"] == "valid"
     assert result["account_identity_redacted"] == "a******n"
+    assert result["verification_source"] == "operator_supplied"
+    assert result["raw_secret_stored"] is False
     assert GITHUB_TOKEN not in rendered
     assert result["not_persisted"] is True
 

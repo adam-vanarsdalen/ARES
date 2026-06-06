@@ -184,9 +184,11 @@ def build_secret_verification_queue(js_data: dict) -> list[dict]:
             "source_url": source_url,
             "confidence": confidence,
             "manual_verification": True,
+            "manual_verification_required": True,
             "recommended_safe_check": recommended_check,
             "raw_secret_stored": False,
             "rotation_recommended": True,
+            "verification_source": "discovered_redacted",
         })
     return queue
 
@@ -875,6 +877,9 @@ def _ground_vuln_report(target, osint, ports, cves, report):
             "secret_id": secret.get("secret_id"),
             "raw_secret_stored": False,
             "manual_verification": True,
+            "manual_verification_required": True,
+            "rotation_recommended": True,
+            "verification_source": "discovered_redacted",
         }, severity="CRITICAL" if secret.get("type") in {"AWS Access Key", "Stripe Key"} and secret.get("confidence") == "HIGH" else "HIGH",
            evidence_refs=["js_intelligence"], confidence="HIGH", exploitability="MEDIUM", business_impact="HIGH")
         if finding["cvss_score"] >= 9.0:
