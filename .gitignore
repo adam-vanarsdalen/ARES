@@ -24,6 +24,8 @@ reports/*
 ares.db
 ares.db-shm
 ares.db-wal
+audit_logs/
+audit_logs/*.jsonl
 
 # macOS
 .DS_Store

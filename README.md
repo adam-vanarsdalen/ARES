@@ -13,6 +13,10 @@ ARES is intentionally powerful when authorization is explicit. Escalation is
 controlled by profile, scope, Rules of Engagement, method/path allowlists,
 operator intent, audit records, and evidence capture.
 
+Do not commit virtualenvs or generated runtime outputs. Use
+`scripts/package_clean.sh` before sharing the repo with recruiters, employers,
+or reviewers.
+
 ## Capability Profiles
 
 | Profile | Intended Use | Governance |
