@@ -40,6 +40,7 @@ from utils.replay import build_replay, write_replay
 from utils.scorecard import build_executive_scorecard
 from utils.config import (
     ASSET_INVENTORY_MAX_HTTP_PROBES,
+    ENABLE_NUCLEI,
     ENABLE_NMAP,
     ENABLE_REVERSE_IP,
     ENABLE_RISKY_METHOD_CHECKS,
@@ -57,9 +58,10 @@ from utils.config import (
 )
 from tools.network_tools import (
     dns_lookup, whois_lookup, subdomain_enumerate,
-    http_probe, check_common_misconfigs, port_scan, fetch_cve_data, redact_org_osint,
+    http_probe, check_common_misconfigs, port_scan, redact_org_osint,
     load_subdomain_wordlist, probe_version_disclosure, subdomain_wordlist_source,
 )
+from tools.cve_sources import fetch_cve_data
 from tools.cert_transparency import cert_transparency_recon
 from tools.external_enrichment import internetdb_lookup, reverse_ip_lookup
 from tools.passive_url_discovery import passive_url_discovery
@@ -2242,18 +2244,21 @@ Return ONLY valid JSON — no markdown, no preamble:
         else:
             epss_sum = {}
 
-        nuclei_data = await asyncio.to_thread(
-            run_nuclei,
-            version_seed_url,
-            self.validator,
-            self.profile.value,
-            self.roe,
-        )
-        if nuclei_data.get("status") not in {"skipped", "blocked_by_roe"}:
-            self.emit("tool_result", {"tool": "nuclei", "data": nuclei_data})
-            self.log("RECON", f"  -> Nuclei {nuclei_data.get('profile', 'safe')}: {len(nuclei_data.get('findings', []))} matches", "orange")
-        elif nuclei_data.get("reason"):
-            self.log("RECON", f"  -> Nuclei skipped: {nuclei_data.get('reason')}", "dim")
+        if ENABLE_NUCLEI:
+            nuclei_data = await asyncio.to_thread(
+                run_nuclei,
+                version_seed_url,
+                self.validator,
+                self.profile.value,
+                self.roe,
+            )
+            if nuclei_data.get("status") not in {"skipped", "blocked_by_roe"}:
+                self.emit("tool_result", {"tool": "nuclei", "data": nuclei_data})
+                self.log("RECON", f"  -> Nuclei {nuclei_data.get('profile', 'safe')}: {len(nuclei_data.get('findings', []))} matches", "orange")
+            elif nuclei_data.get("reason"):
+                self.log("RECON", f"  -> Nuclei skipped: {nuclei_data.get('reason')}", "dim")
+        else:
+            nuclei_data = {"status": "skipped", "reason": "disabled", "findings": []}
 
         # AI vulnerability analysis
         self.log("RECON", "Analyzing vulnerabilities with AI...", "")
