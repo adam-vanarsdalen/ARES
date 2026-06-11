@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from utils.zt_maturity import compute_zt_maturity
+
 
 def _clamp(value: float) -> int:
     return max(0, min(100, round(value)))
@@ -27,6 +29,7 @@ def build_executive_scorecard(osint: dict, recon: dict, redteam: dict, manifest:
     ]
     evidence = redteam.get("evidence_ledger", [])
     assets = recon.get("asset_inventory", osint.get("asset_inventory", []))
+    zt_result = compute_zt_maturity(findings=active, assets=assets)
     coverage_gaps = list(manifest.get("coverage_gaps", []))
 
     severity_weight = {"CRITICAL": 30, "HIGH": 20, "MEDIUM": 10, "LOW": 4, "INFO": 1}
@@ -106,7 +109,9 @@ def build_executive_scorecard(osint: dict, recon: dict, redteam: dict, manifest:
             "vdp_reportability_score": vdp_reportability,
             "scope_confidence_score": scope_confidence,
             "false_positive_risk": false_positive_risk,
+            "zt_overall_risk": zt_result["overall_zt_risk"],
         },
+        "zt_maturity": zt_result,
         "top_confirmed_findings": confirmed[:5],
         "top_reportable_findings": reportable[:5],
         "manual_verification_candidates": manual[:5],

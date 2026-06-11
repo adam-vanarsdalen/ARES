@@ -1,0 +1,42 @@
+actor: APT41
+also_known_as: Double Dragon
+nation_state: China
+mitre_group_id: G0096
+description: >
+  APT41 is a Chinese state-sponsored threat group known for exploiting
+  public-facing applications, deploying web shells, and abusing valid
+  accounts across technology, healthcare, and government targets.
+attack_lifecycle:
+  - phase: Initial Access
+    technique_id: T1190
+    technique_name: Exploit Public-Facing Application
+    lab_simulation: >
+      The exposed demo application routes represent the public-facing
+      application surface APT41 would inspect for vulnerable components.
+  - phase: Persistence
+    technique_id: T1505.003
+    technique_name: Web Shell
+    lab_simulation: >
+      The lab documents how an unsafe upload or management endpoint could
+      enable persistence, but it does not upload or execute any payload.
+  - phase: Defense Evasion
+    technique_id: T1078
+    technique_name: Valid Accounts
+    lab_simulation: >
+      The demo authentication panel represents a valid-account surface where
+      stolen credentials could be reused.
+  - phase: Lateral Movement
+    technique_id: T1021.002
+    technique_name: SMB/Windows Admin Shares
+    lab_simulation: >
+      The scenario documents a possible adjacent-service pivot only; the ARES
+      lab performs no SMB connection or lateral movement.
+expected_findings:
+  - vulnerable_service
+  - exposed_admin_panel
+  - exposed_api_docs
+controls:
+  - Patch public-facing services on a risk-based cadence
+  - Restrict upload and management endpoints
+  - Require phishing-resistant MFA for administrative accounts
+  - Segment management protocols from application networks

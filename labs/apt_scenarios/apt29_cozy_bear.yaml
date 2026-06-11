@@ -1,0 +1,37 @@
+actor: APT29
+also_known_as: Cozy Bear
+nation_state: Russia
+mitre_group_id: G0016
+description: >
+  APT29 is a Russian state-sponsored threat group known for targeting
+  government, NGO, and think-tank networks using spearphishing and
+  supply-chain compromise.
+attack_lifecycle:
+  - phase: Initial Access
+    technique_id: T1566.001
+    technique_name: Spearphishing Attachment
+    lab_simulation: >
+      Observe the demo app's file upload endpoint. A spearphishing scenario
+      would deliver a malicious document via email to gain initial access.
+      In this lab, the upload endpoint represents the initial access vector.
+  - phase: Persistence
+    technique_id: T1078
+    technique_name: Valid Accounts
+    lab_simulation: >
+      APT29 frequently reuses harvested credentials. The demo app's auth
+      panel represents the credential reuse surface.
+  - phase: Exfiltration
+    technique_id: T1041
+    technique_name: Exfiltration Over C2 Channel
+    lab_simulation: >
+      The actuator endpoint's environment variable exposure simulates the
+      data staging phase before exfiltration.
+expected_findings:
+  - exposed_admin_panel
+  - exposed_actuator
+  - exposed_secret
+controls:
+  - Enforce phishing-resistant MFA on all external accounts
+  - Apply principle of least privilege to service accounts
+  - Monitor for credential stuffing against login endpoints
+  - Disable and restrict Spring Boot actuator endpoints

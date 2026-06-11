@@ -1,0 +1,142 @@
+T1566.001:
+  - group: APT29
+    also_known_as: Cozy Bear
+    nation_state: Russia
+    sector_targets: [Government, Think Tank, NGO]
+  - group: APT28
+    also_known_as: Fancy Bear
+    nation_state: Russia
+    sector_targets: [Government, Military, Media]
+  - group: FIN7
+    also_known_as: Carbanak
+    nation_state: Financially motivated
+    sector_targets: [Financial Services, Retail, Hospitality]
+T1078:
+  - group: APT29
+    also_known_as: Cozy Bear
+    nation_state: Russia
+    sector_targets: [Government, Think Tank, NGO]
+  - group: APT41
+    also_known_as: Winnti
+    nation_state: China
+    sector_targets: [Technology, Healthcare, Government]
+  - group: Lazarus Group
+    also_known_as: Hidden Cobra
+    nation_state: North Korea
+    sector_targets: [Financial Services, Defense, Cryptocurrency]
+T1059.001:
+  - group: APT29
+    also_known_as: Cozy Bear
+    nation_state: Russia
+    sector_targets: [Government, Think Tank, NGO]
+  - group: Lazarus Group
+    also_known_as: Hidden Cobra
+    nation_state: North Korea
+    sector_targets: [Financial Services, Defense, Cryptocurrency]
+  - group: FIN7
+    also_known_as: Carbanak
+    nation_state: Financially motivated
+    sector_targets: [Financial Services, Retail, Hospitality]
+T1021.001:
+  - group: APT29
+    also_known_as: Cozy Bear
+    nation_state: Russia
+    sector_targets: [Government, Think Tank, NGO]
+T1560:
+  - group: APT29
+    also_known_as: Cozy Bear
+    nation_state: Russia
+    sector_targets: [Government, Think Tank, NGO]
+T1041:
+  - group: APT29
+    also_known_as: Cozy Bear
+    nation_state: Russia
+    sector_targets: [Government, Think Tank, NGO]
+  - group: Lazarus Group
+    also_known_as: Hidden Cobra
+    nation_state: North Korea
+    sector_targets: [Financial Services, Defense, Cryptocurrency]
+  - group: FIN7
+    also_known_as: Carbanak
+    nation_state: Financially motivated
+    sector_targets: [Financial Services, Retail, Hospitality]
+T1203:
+  - group: APT28
+    also_known_as: Fancy Bear
+    nation_state: Russia
+    sector_targets: [Government, Military, Media]
+T1059.003:
+  - group: APT28
+    also_known_as: Fancy Bear
+    nation_state: Russia
+    sector_targets: [Government, Military, Media]
+T1105:
+  - group: APT28
+    also_known_as: Fancy Bear
+    nation_state: Russia
+    sector_targets: [Government, Military, Media]
+  - group: Sandworm
+    also_known_as: Voodoo Bear
+    nation_state: Russia
+    sector_targets: [Energy, Government, Critical Infrastructure]
+T1071.001:
+  - group: APT28
+    also_known_as: Fancy Bear
+    nation_state: Russia
+    sector_targets: [Government, Military, Media]
+  - group: Sandworm
+    also_known_as: Voodoo Bear
+    nation_state: Russia
+    sector_targets: [Energy, Government, Critical Infrastructure]
+T1190:
+  - group: APT41
+    also_known_as: Winnti
+    nation_state: China
+    sector_targets: [Technology, Healthcare, Government]
+  - group: Lazarus Group
+    also_known_as: Hidden Cobra
+    nation_state: North Korea
+    sector_targets: [Financial Services, Defense, Cryptocurrency]
+  - group: Sandworm
+    also_known_as: Voodoo Bear
+    nation_state: Russia
+    sector_targets: [Energy, Government, Critical Infrastructure]
+T1059.006:
+  - group: APT41
+    also_known_as: Winnti
+    nation_state: China
+    sector_targets: [Technology, Healthcare, Government]
+T1505.003:
+  - group: APT41
+    also_known_as: Winnti
+    nation_state: China
+    sector_targets: [Technology, Healthcare, Government]
+T1021.002:
+  - group: APT41
+    also_known_as: Winnti
+    nation_state: China
+    sector_targets: [Technology, Healthcare, Government]
+T1486:
+  - group: Lazarus Group
+    also_known_as: Hidden Cobra
+    nation_state: North Korea
+    sector_targets: [Financial Services, Defense, Cryptocurrency]
+  - group: Sandworm
+    also_known_as: Voodoo Bear
+    nation_state: Russia
+    sector_targets: [Energy, Government, Critical Infrastructure]
+T1204.002:
+  - group: FIN7
+    also_known_as: Carbanak
+    nation_state: Financially motivated
+    sector_targets: [Financial Services, Retail, Hospitality]
+T1056.001:
+  - group: FIN7
+    also_known_as: Carbanak
+    nation_state: Financially motivated
+    sector_targets: [Financial Services, Retail, Hospitality]
+T1059.004:
+  - group: Sandworm
+    also_known_as: Voodoo Bear
+    nation_state: Russia
+    sector_targets: [Energy, Government, Critical Infrastructure]

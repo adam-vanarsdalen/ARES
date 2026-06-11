@@ -1,0 +1,71 @@
+exposed_actuator:
+  technique_id: T1218
+  name: System Binary Proxy Execution
+  rationale: Exposed management endpoints can be abused to proxy execution through trusted system processes.
+  lotl_binaries: [curl, wget, certutil]
+
+exposed_admin_panel:
+  technique_id: T1133
+  name: External Remote Services
+  rationale: Admin panels accessible externally enable persistence via legitimate remote management channels.
+  lotl_binaries: []
+
+version_disclosure:
+  technique_id: T1592.002
+  name: Gather Victim Host Information - Software
+  rationale: Version disclosure aids LotL by helping attackers identify which native tools and interpreters are available.
+  lotl_binaries: []
+
+exposed_api_docs:
+  technique_id: T1595.002
+  name: Active Scanning - Vulnerability Scanning
+  rationale: API documentation reveals service structures that attackers can leverage with native scripting tools.
+  lotl_binaries: [curl, python, powershell]
+
+cors_misconfiguration:
+  technique_id: T1185
+  name: Browser Session Hijacking
+  rationale: CORS misconfigurations can be exploited via browser-native fetch/XHR without custom tooling.
+  lotl_binaries: []
+
+weak_tls:
+  technique_id: T1557
+  name: Adversary-in-the-Middle
+  rationale: Weak TLS enables interception via OS-level network tooling already present on compromised hosts.
+  lotl_binaries: [openssl, ssldump]
+
+missing_security_headers:
+  technique_id: T1185
+  name: Browser Session Hijacking
+  rationale: Missing browser controls permit abuse through native browser capabilities and scripts.
+  lotl_binaries: [powershell]
+
+clickjacking:
+  technique_id: T1185
+  name: Browser Session Hijacking
+  rationale: Clickjacking abuses normal browser rendering and user interaction without custom malware.
+  lotl_binaries: []
+
+open_redirect:
+  technique_id: T1566.002
+  name: Spearphishing Link
+  rationale: Trusted application redirects can be used with native browsers and messaging clients for phishing.
+  lotl_binaries: [curl]
+
+host_header_injection:
+  technique_id: T1090
+  name: Proxy
+  rationale: Host header manipulation can be performed with native HTTP clients and proxy tooling.
+  lotl_binaries: [curl, powershell]
+
+exposed_secret:
+  technique_id: T1552.001
+  name: Unsecured Credentials - Credentials In Files
+  rationale: Native shell and scripting tools can search exposed files and responses for credentials.
+  lotl_binaries: [grep, findstr, powershell]
+
+vulnerable_service:
+  technique_id: T1210
+  name: Exploitation of Remote Services
+  rationale: Native networking and scripting tools can identify and interact with vulnerable remote services.
+  lotl_binaries: [curl, wget, powershell]

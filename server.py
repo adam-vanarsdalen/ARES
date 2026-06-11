@@ -58,6 +58,7 @@ from utils.config import (
     as_dict as config_dict,
 )
 from tools.secret_workbench import verify_operator_secret
+from tools.sbom_ingest import ingest_sbom
 from utils.finding_lifecycle import find_finding, initialize_findings, review_finding
 from exporters.stix_exporter import build_stix_bundle
 from exporters.oscal_exporter import build_oscal_assessment_results
@@ -296,6 +297,16 @@ async def health():
             if session.get("status") == "running"
         )
     }
+
+
+@app.post("/sbom/analyze")
+async def analyze_sbom(request: Request):
+    """Accept a CycloneDX JSON SBOM body and return correlated CVE findings."""
+    try:
+        sbom_data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid_sbom_json"})
+    return JSONResponse(ingest_sbom(sbom_data))
 
 
 @app.post("/assess", response_model=AssessmentSession)

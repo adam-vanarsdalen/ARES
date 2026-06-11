@@ -14,6 +14,8 @@ MAPPING_FILES = {
     "owasp_asvs": "owasp_asvs_mapping.yaml",
     "nist_800_53": "nist_800_53_mapping.yaml",
     "ssdf": "ssdf_mapping.yaml",
+    "lotl": "lotl_indicators.yaml",
+    "d3fend": "d3fend_mapping.yaml",
 }
 
 
@@ -91,6 +93,8 @@ def map_finding_to_standards(finding: dict, mapping_dir: str | Path | None = Non
         "owasp_asvs": [],
         "nist_800_53": [],
         "ssdf": [],
+        "lotl": [],
+        "d3fend": [],
         "warnings": loaded["warnings"],
         "disclaimer": DISCLAIMER,
     }

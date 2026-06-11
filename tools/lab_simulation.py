@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
+
+import yaml
 
 from utils.lab_targets import LabManifest, is_lab_target, load_lab_manifest
 
@@ -103,3 +106,81 @@ def run_lab_simulations(
         for scenario in selected
         if scenario in SCENARIOS
     ]
+
+
+def load_apt_scenarios(scenarios_dir: str | Path | None = None) -> dict[str, dict]:
+    """
+    Load APT scenario YAML files and map each actor name to its definition.
+
+    Missing directories and malformed files are ignored so lab documentation
+    remains optional and non-fatal.
+    """
+    root = (
+        Path(scenarios_dir)
+        if scenarios_dir is not None
+        else Path(__file__).resolve().parent.parent / "labs" / "apt_scenarios"
+    )
+    if not root.is_dir():
+        return {}
+    scenarios = {}
+    for path in sorted([*root.glob("*.yaml"), *root.glob("*.yml")]):
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                scenario = yaml.safe_load(handle) or {}
+            if isinstance(scenario, dict) and scenario.get("actor"):
+                scenarios[str(scenario["actor"])] = scenario
+        except (OSError, yaml.YAMLError):
+            continue
+    return scenarios
+
+
+def run_apt_scenario(actor_name: str, lab_url: str) -> dict:
+    """
+    Build a documentation-only APT scenario result for a declared lab target.
+
+    The function performs no network request and refuses non-lab targets before
+    loading or interpreting a scenario.
+    """
+    base = {
+        "actor": actor_name,
+        "lab_url": lab_url,
+        "phases_simulated": [],
+        "expected_findings": [],
+        "controls": [],
+        "status": "failed",
+        "error": "",
+    }
+    try:
+        if not is_lab_target(lab_url):
+            return {**base, "status": "not_lab_target", "error": "target_not_declared_lab"}
+        scenarios = load_apt_scenarios()
+        scenario = next(
+            (
+                definition
+                for actor, definition in scenarios.items()
+                if actor.lower() == str(actor_name or "").lower()
+            ),
+            None,
+        )
+        if scenario is None:
+            return {**base, "status": "unknown_actor", "error": "unknown_actor"}
+        phases = [
+            {
+                "technique_id": str(phase.get("technique_id") or ""),
+                "technique_name": str(phase.get("technique_name") or ""),
+                "simulation_note": str(phase.get("lab_simulation") or "").strip(),
+            }
+            for phase in scenario.get("attack_lifecycle", [])
+            if isinstance(phase, dict)
+        ]
+        return {
+            "actor": str(scenario.get("actor") or actor_name),
+            "lab_url": lab_url,
+            "phases_simulated": phases,
+            "expected_findings": list(scenario.get("expected_findings") or []),
+            "controls": list(scenario.get("controls") or []),
+            "status": "success",
+            "error": "",
+        }
+    except Exception as exc:
+        return {**base, "error": type(exc).__name__}

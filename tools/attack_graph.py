@@ -882,3 +882,64 @@ def map_to_mitre(findings: list[dict]) -> list[dict]:
         tagged.append(tagged_finding)
 
     return tagged
+
+
+def build_identity_node(
+    username: str,
+    auth_mechanism: str,
+    mfa_present: bool,
+    source_finding: str = "",
+) -> dict:
+    """Build a graph node representing a discovered identity surface."""
+    mfa_label = "mfa" if mfa_present else "no_mfa"
+    return {
+        "id": _stable_id("identity", username, auth_mechanism),
+        "kind": "identity",
+        "label": f"Identity: {username} ({auth_mechanism}, {mfa_label})",
+        "username": username,
+        "auth_mechanism": auth_mechanism,
+        "mfa_present": mfa_present,
+        "technique_id": "T1078",
+        "severity": "MEDIUM" if mfa_present else "HIGH",
+        "source_finding": source_finding,
+        "edges": [],
+    }
+
+
+def build_cloud_resource_node(
+    resource_type: str,
+    resource_name: str,
+    permission_level: str,
+    exposed_via_finding: str = "",
+) -> dict:
+    """Build a graph node representing a cloud resource or IAM surface."""
+    return {
+        "id": _stable_id("cloud_resource", resource_type, resource_name),
+        "kind": "cloud_resource",
+        "label": f"Cloud: {resource_type.replace('_', ' ')} ({permission_level})",
+        "resource_type": resource_type,
+        "resource_name": resource_name,
+        "permission_level": permission_level,
+        "technique_id": "T1530",
+        "severity": "CRITICAL" if permission_level == "public_write" else "HIGH",
+        "exposed_via_finding": exposed_via_finding,
+        "edges": [],
+    }
+
+
+def enrich_graph_with_attack_paths(graph: dict) -> dict:
+    """
+    Add deterministic lateral movement paths to an existing graph result.
+
+    Errors are normalized into an empty path list so graph generation remains
+    non-fatal.
+    """
+    from utils.attack_path_reasoning import compute_lateral_movement_paths
+    try:
+        nodes = graph.get("nodes", [])
+        paths = compute_lateral_movement_paths(nodes)
+        graph["lateral_movement_paths"] = paths
+    except Exception as exc:  # noqa: BLE001
+        graph["lateral_movement_paths"] = []
+        graph["lateral_movement_paths_error"] = str(exc)
+    return graph

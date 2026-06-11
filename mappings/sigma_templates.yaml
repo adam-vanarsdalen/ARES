@@ -1,0 +1,89 @@
+exposed_actuator:
+  title: Exposed Spring Actuator Endpoint Access
+  description: Detects HTTP requests to Spring Boot actuator endpoints
+  category: webserver
+  logsource_product: apache
+  detection_keywords: ["/actuator/", "/actuator/env", "/actuator/heapdump"]
+  condition: keywords
+  falsepositives: [Legitimate monitoring tools, Internal health checks]
+  level: high
+
+cors_misconfiguration:
+  title: Suspicious CORS Origin Reflection
+  description: Detects responses reflecting arbitrary Origin headers
+  category: webserver
+  logsource_product: apache
+  detection_keywords: ["Access-Control-Allow-Origin: null", "Access-Control-Allow-Credentials: true"]
+  condition: keywords
+  falsepositives: [Development environments]
+  level: medium
+
+exposed_admin_panel:
+  title: Unauthenticated Admin Panel Access
+  description: Detects access to administrative panel paths without authentication
+  category: webserver
+  logsource_product: apache
+  detection_keywords: ["/admin", "/wp-admin", "/administrator", "/manage"]
+  condition: keywords
+  falsepositives: [Authorized administrators]
+  level: high
+
+version_disclosure:
+  title: Server Version Information Disclosure
+  description: Detects server responses leaking version strings in headers
+  category: webserver
+  logsource_product: apache
+  detection_keywords: ["Server: Apache/", "Server: nginx/", "X-Powered-By:"]
+  condition: keywords
+  falsepositives: [Default server configurations]
+  level: low
+
+weak_tls:
+  title: Weak TLS Protocol or Cipher Negotiation
+  description: Detects connections using legacy TLS protocols or weak cipher suites
+  category: network_connection
+  logsource_product: firewall
+  detection_keywords: ["TLSv1.0", "TLSv1.1", "RC4", "3DES"]
+  condition: keywords
+  falsepositives: [Legacy systems pending approved migration]
+  level: high
+
+exposed_api_docs:
+  title: Public API Documentation Access
+  description: Detects requests to API documentation and schema endpoints
+  category: webserver
+  logsource_product: apache
+  detection_keywords: ["/swagger", "/openapi.json", "/api-docs"]
+  condition: keywords
+  falsepositives: [Intentionally public developer portals]
+  level: medium
+
+open_redirect:
+  title: Suspicious External Redirect Request
+  description: Detects redirect parameters containing absolute external destinations
+  category: webserver
+  logsource_product: apache
+  detection_keywords: ["redirect=http", "url=http", "next=http", "returnUrl=http"]
+  condition: keywords
+  falsepositives: [Approved federated login redirects]
+  level: medium
+
+host_header_injection:
+  title: Suspicious Host Header Manipulation
+  description: Detects unexpected Host or forwarded host values in web requests
+  category: webserver
+  logsource_product: apache
+  detection_keywords: ["X-Forwarded-Host:", "X-Host:", "Forwarded: host="]
+  condition: keywords
+  falsepositives: [Approved reverse proxies]
+  level: high
+
+exposed_secret:
+  title: Exposed Secret Material in Web Response
+  description: Detects credential-like markers returned in web content
+  category: webserver
+  logsource_product: apache
+  detection_keywords: ["AKIA", "github_pat_", "sk_live_", "api_key"]
+  condition: keywords
+  falsepositives: [Synthetic test fixtures]
+  level: critical

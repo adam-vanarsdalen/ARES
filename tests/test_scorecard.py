@@ -21,6 +21,7 @@ def test_empty_run_is_handled():
         "vdp_reportability_score",
         "scope_confidence_score",
         "false_positive_risk",
+        "zt_overall_risk",
     }
     assert scorecard["asset_exposure_summary"]["active_findings"] == 0
 

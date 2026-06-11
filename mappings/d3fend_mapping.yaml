@@ -1,0 +1,71 @@
+exposed_actuator:
+  technique_id: D3-NTF
+  name: Network Traffic Filtering
+  rationale: Filter or block access to management API paths at the network perimeter.
+  d3fend_category: Isolate
+
+cors_misconfiguration:
+  technique_id: D3-CH
+  name: Credential Hardening
+  rationale: Enforce strict CORS policies to prevent credential-bearing cross-origin requests.
+  d3fend_category: Harden
+
+weak_tls:
+  technique_id: D3-CH
+  name: Credential Hardening
+  rationale: Enforce TLS 1.2+ and strong cipher suites to prevent session interception.
+  d3fend_category: Harden
+
+exposed_admin_panel:
+  technique_id: D3-MFA
+  name: Multi-factor Authentication
+  rationale: Require MFA on all administrative interfaces to raise attacker cost.
+  d3fend_category: Harden
+
+version_disclosure:
+  technique_id: D3-OTP
+  name: Outbound Traffic Filtering
+  rationale: Strip version disclosure headers at the reverse proxy or WAF layer.
+  d3fend_category: Isolate
+
+open_redirect:
+  technique_id: D3-UAP
+  name: URL Analysis
+  rationale: Validate and allowlist redirect destinations at the application layer.
+  d3fend_category: Detect
+
+exposed_api_docs:
+  technique_id: D3-NTF
+  name: Network Traffic Filtering
+  rationale: Restrict access to API documentation endpoints by IP allowlist or authentication.
+  d3fend_category: Isolate
+
+missing_security_headers:
+  technique_id: D3-CH
+  name: Credential Hardening
+  rationale: Implement security headers (CSP, HSTS, X-Frame-Options) to harden browser posture.
+  d3fend_category: Harden
+
+clickjacking:
+  technique_id: D3-OTP
+  name: Outbound Traffic Filtering
+  rationale: Set X-Frame-Options or CSP frame-ancestors to prevent clickjacking attacks.
+  d3fend_category: Harden
+
+host_header_injection:
+  technique_id: D3-UAP
+  name: URL Analysis
+  rationale: Validate and normalize the Host header at the application or proxy layer.
+  d3fend_category: Detect
+
+exposed_secret:
+  technique_id: D3-SCR
+  name: Credential Rotation
+  rationale: Rotate all exposed credentials immediately and audit for unauthorized use.
+  d3fend_category: Respond
+
+vulnerable_service:
+  technique_id: D3-SCP
+  name: Software Patching
+  rationale: Apply vendor patches for known CVEs and maintain a patch cadence policy.
+  d3fend_category: Harden
