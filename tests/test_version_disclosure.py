@@ -12,7 +12,7 @@ def _scope():
 
 
 def _fake_request_for(responses):
-    def fake_request(url, timeout):
+    def fake_request(url, timeout, scope):
         for path, response in responses.items():
             if url.endswith(path):
                 return response

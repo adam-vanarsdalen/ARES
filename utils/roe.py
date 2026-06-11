@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
-import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -25,6 +25,7 @@ from utils.config import (
     ENABLE_RISKY_METHOD_CHECKS,
     REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM,
     REQUIRE_ROE_FOR_ADVANCED,
+    ROE_POLICY_DIR,
 )
 from utils.scope_validator import Scope, ScopeValidator
 
@@ -50,6 +51,8 @@ class RoEPolicy:
     scan_windows: list[dict | str] = field(default_factory=list)
     notes: str = ""
     allowed_capabilities: list[str] = field(default_factory=list)
+    allowed_nuclei_template_ids: list[str] = field(default_factory=list)
+    allow_uninspected_nuclei_templates: bool = False
     source_path: str = ""
 
     def to_dict(self) -> dict:
@@ -71,6 +74,8 @@ class RoEPolicy:
                 "scan_windows": self.scan_windows,
                 "notes": self.notes,
                 "allowed_capabilities": self.allowed_capabilities,
+                "allowed_nuclei_template_ids": self.allowed_nuclei_template_ids,
+                "allow_uninspected_nuclei_templates": self.allow_uninspected_nuclei_templates,
             },
             "source_path": self.source_path,
         }
@@ -111,17 +116,47 @@ def parse_roe_policy(data: dict, source_path: str = "") -> RoEPolicy:
         scan_windows=list(engagement.get("scan_windows") or []),
         notes=str(engagement.get("notes", "")).strip(),
         allowed_capabilities=_string_list(engagement.get("allowed_capabilities")),
+        allowed_nuclei_template_ids=_string_list(engagement.get("allowed_nuclei_template_ids")),
+        allow_uninspected_nuclei_templates=bool(
+            engagement.get("allow_uninspected_nuclei_templates", False)
+        ),
         source_path=source_path,
     )
 
 
-def load_roe_policy(path: str) -> RoEPolicy | None:
-    raw_path = (path or "").strip()
-    if not raw_path:
+_POLICY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def resolve_roe_policy_path(policy_id: str, policy_dir: str = "") -> Path:
+    raw_id = str(policy_id or "").strip()
+    if not raw_id:
+        raise ValueError("RoE policy ID is required")
+    if not _POLICY_ID.fullmatch(raw_id) or "/" in raw_id or "\\" in raw_id or raw_id in {".", ".."}:
+        raise ValueError("Invalid RoE policy ID")
+    root = Path(policy_dir or ROE_POLICY_DIR)
+    if not root.is_absolute():
+        root = Path(__file__).resolve().parents[1] / root
+    root = root.resolve()
+    filename = raw_id if raw_id.endswith((".yaml", ".yml")) else f"{raw_id}.yaml"
+    candidate = root / filename
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Unknown RoE policy ID: {raw_id}") from exc
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("RoE policy resolves outside the approved policy directory") from exc
+    if not resolved.is_file():
+        raise ValueError(f"Unknown RoE policy ID: {raw_id}")
+    return resolved
+
+
+def load_roe_policy(policy_id: str, policy_dir: str = "") -> RoEPolicy | None:
+    raw_id = str(policy_id or "").strip()
+    if not raw_id:
         return None
-    policy_path = Path(raw_path).expanduser().resolve()
-    if not policy_path.is_file():
-        raise ValueError(f"RoE policy not found: {policy_path}")
+    policy_path = resolve_roe_policy_path(raw_id, policy_dir)
     with policy_path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     return parse_roe_policy(data, source_path=str(policy_path))

@@ -204,7 +204,7 @@ def test_host_header_injection(url: str, scope: ScopeValidator) -> dict:
         "Repeat with X-Forwarded-Host and Forwarded headers through the authorized edge path and inspect absolute links and reset URLs.",
         reflected=reflected,
         explicit_reflection="evil.example.invalid" in location,
-        manual_verification_needed=not ("evil.example.invalid" in location),
+        manual_verification_needed="evil.example.invalid" not in location,
         status_code=response.get("status_code", 0),
         location=location,
     )

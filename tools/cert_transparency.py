@@ -11,7 +11,6 @@ import json
 import logging
 import urllib.request
 import urllib.parse
-import re
 import socket
 import concurrent.futures
 from utils.scope_validator import ScopeValidator

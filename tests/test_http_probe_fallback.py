@@ -31,7 +31,7 @@ class TestHttpProbeFallback(unittest.TestCase):
     def test_http_probe_uses_head_fallback_after_get_timeout(self):
         scope = ScopeValidator(Scope(domains=["example.com", "*.example.com"]))
 
-        def fake_do_request(url, timeout=10, method="GET"):
+        def fake_do_request(url, timeout=10, method="GET", scope=None):
             if method == "GET":
                 raise TimeoutError("timed out")
             return (
@@ -56,7 +56,7 @@ class TestHttpProbeFallback(unittest.TestCase):
     def test_http_probe_tries_common_entrypoints_when_root_fails(self):
         scope = ScopeValidator(Scope(domains=["example.com", "*.example.com"]))
 
-        def fake_do_request(url, timeout=10, method="GET"):
+        def fake_do_request(url, timeout=10, method="GET", scope=None):
             if url.endswith("/index.php") and method == "GET":
                 return (
                     {
@@ -115,6 +115,32 @@ class TestHttpProbeFallback(unittest.TestCase):
         self.assertEqual(out["status_code"], 200)
         self.assertFalse(out["partial"])
         self.assertEqual(out["error"], "")
+
+    def test_http_probe_records_blocked_redirect_without_body(self):
+        scope = ScopeValidator(Scope(domains=["example.com"]))
+        blocked = {
+            "source_url": "https://example.com",
+            "destination_url": "http://127.0.0.1/private",
+            "status_code": 302,
+            "body_fetched": False,
+            "reason": "blocked",
+        }
+        response = (
+            {"Location": "http://127.0.0.1/private"},
+            "",
+            302,
+            "https://example.com",
+            [],
+            blocked,
+        )
+        with mock.patch.object(network_tools, "_do_request", return_value=response):
+            out = network_tools.http_probe("https://example.com", scope)
+        self.assertEqual(out["blocked_redirect"], blocked)
+        self.assertEqual(out["body_preview"], "")
+
+    def test_curl_fallback_does_not_enable_blind_redirects(self):
+        source = open(network_tools.__file__, encoding="utf-8").read()
+        self.assertNotIn('"curl", "-k", "-sS", "-L"', source)
 
 
 if __name__ == "__main__":

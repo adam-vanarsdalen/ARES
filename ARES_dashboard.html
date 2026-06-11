@@ -3,12 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:8001 http://localhost:8001; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" />
   <title>ARES — Autonomous Recon & Exploitation System</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" integrity="sha512-8Q6Y9XnTbOE+JNvjBQwJ2H8S+UV4uA6hiRykhdtIyDYZ2TprdNmWOUaKdGzOhyr4dCyk287OejbPvwl7lrfqrQ==" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" integrity="sha512-MOCpqoRoisCTwJ8vQQiciZv0qcpROCidek3GTFS6KTk2+y7munJIlKCVkFCYY+p3ErYFXCjmFjnfTTRSC1OHWQ==" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js" integrity="sha512-ND11pbmp3M3Wldj90In1EUlHIt8T7O6FykizQ/yXrFjHtpX+D0SX+/IVeLjqAV91r/Lavq4BpWJIC0nUtw5Kvw==" crossorigin="anonymous"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -20,7 +19,7 @@
       --orange: #ff8800; --orange-dim: #ff880022;
       --blue: #00aaff; --blue-dim: #00aaff22;
       --text: #c8d8e8; --text-dim: #6a8090; --text-bright: #e8f4ff;
-      --mono: 'Share Tech Mono', monospace; --sans: 'Rajdhani', sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; --sans: Inter, system-ui, sans-serif;
     }
     body { background: var(--black); color: var(--text); font-family: var(--sans); overflow-x: hidden; }
     body::before {
@@ -227,11 +226,9 @@ function RiskMeter({ label }) {
 
 function App() {
   const [target, setTarget] = useState("");
-  const [domains, setDomains] = useState("");
-  const [ipRanges, setIpRanges] = useState("");
   const [mode, setMode] = useState("full");
   const [profile, setProfile] = useState("recon");
-  const [roePolicyPath, setRoePolicyPath] = useState("");
+  const [policyId, setPolicyId] = useState("");
   const [secretProvider, setSecretProvider] = useState("github");
   const [volatileSecret, setVolatileSecret] = useState("");
   const [secretVerifyResult, setSecretVerifyResult] = useState(null);
@@ -242,7 +239,7 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [health, setHealth] = useState(null);
   const [apiBase, setApiBase] = useState(API_CANDIDATES[0]);
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem("aresApiKey") || "dev-insecure");
+  const [apiKey, setApiKey] = useState("");
   const [phases, setPhases] = useState({ osint: "idle", recon: "idle", redteam: "idle" });
   const [phaseDetail, setPhaseDetail] = useState({ osint: "Awaiting launch", recon: "Awaiting OSINT", redteam: "Awaiting recon" });
   const [results, setResults] = useState({});
@@ -264,10 +261,6 @@ function App() {
   useEffect(() => {
     if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
   }, [logs]);
-
-  useEffect(() => {
-    localStorage.setItem("aresApiKey", apiKey);
-  }, [apiKey]);
 
   useEffect(() => {
     if (done && sessionId) {
@@ -316,26 +309,15 @@ function App() {
     setPhaseDetail({ osint: "Starting...", recon: "Waiting", redteam: "Waiting" });
     setReportPath("");
 
-    const targetHost = cleanTarget.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
-    const isIpTarget = /^(\d{1,3}\.){3}\d{1,3}$/.test(targetHost);
-    const scopeDomains = domains.trim()
-      ? domains.split("\n").map(d => d.trim()).filter(Boolean)
-      : (isIpTarget ? [] : [targetHost, `*.${targetHost}`]);
-    const scopeIpRanges = ipRanges.trim()
-      ? ipRanges.split("\n").map(r => r.trim()).filter(Boolean)
-      : [];
-
     try {
       const res = await fetch(`${apiBaseRef.current}/assess`, {
         method: "POST",
         headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           target: cleanTarget,
-          domains: scopeDomains,
-          ip_ranges: scopeIpRanges,
           mode,
           profile,
-          roe_policy_path: roePolicyPath.trim() || null,
+          policy_id: policyId.trim() || null,
         })
       });
 
@@ -388,6 +370,8 @@ function App() {
           type: `${secretProvider} credential`,
           provider: secretProvider,
           profile,
+          policy_id: policyId.trim() || null,
+          operator_confirmation: true,
           secret_value: volatileSecret,
           perform_metadata_check: false,
         }),
@@ -573,22 +557,13 @@ function App() {
 
           <div className="input-group">
             <label className="input-label">API KEY</label>
-            <input className="input-field" type="password" placeholder="X-ARES-Key" value={apiKey} onChange={e => setApiKey(e.target.value)} disabled={running} />
+            <input className="input-field" type="password" autoComplete="off" placeholder="X-ARES-Key" value={apiKey} onChange={e => setApiKey(e.target.value)} disabled={running} />
+            <div className="mode-help" style={{ padding: "6px 0 0", border: 0 }}>Held in memory only and cleared when this page closes.</div>
           </div>
 
           <div className="input-group">
             <label className="input-label">TARGET</label>
             <input className="input-field" placeholder="example.com" value={target} onChange={e => setTarget(e.target.value)} disabled={running} />
-          </div>
-
-          <div className="input-group">
-            <label className="input-label">AUTHORIZED SCOPE (one per line)</label>
-            <textarea className="input-field" placeholder={"example.com\n*.example.com"} value={domains} onChange={e => setDomains(e.target.value)} disabled={running} rows={3} />
-          </div>
-
-          <div className="input-group">
-            <label className="input-label">AUTHORIZED IP RANGES</label>
-            <textarea className="input-field" placeholder={"127.0.0.1/32\n10.0.0.0/24"} value={ipRanges} onChange={e => setIpRanges(e.target.value)} disabled={running} rows={2} />
           </div>
 
           <div className="section-label">Mode</div>
@@ -611,8 +586,8 @@ function App() {
           </div>
           {(profile === "advanced" || profile === "custom" || profile === "lab") && (
             <div className="input-group" style={{ marginTop: 10 }}>
-              <label className="input-label">ROE POLICY PATH</label>
-              <input className="input-field" placeholder="policies/roe.example.yaml" value={roePolicyPath} onChange={e => setRoePolicyPath(e.target.value)} disabled={running} />
+              <label className="input-label">ROE POLICY ID</label>
+              <input className="input-field" placeholder="example" value={policyId} onChange={e => setPolicyId(e.target.value)} disabled={running} />
             </div>
           )}
 

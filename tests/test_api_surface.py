@@ -55,6 +55,19 @@ def test_health(client):
     assert "config" in data
 
 
+def test_dashboard_patch_cors_preflight_is_allowed(client):
+    response = client.options(
+        "/assess/example/findings/finding/review",
+        headers={
+            "Origin": "http://localhost:8001",
+            "Access-Control-Request-Method": "PATCH",
+            "Access-Control-Request-Headers": "content-type,x-ares-key",
+        },
+    )
+    assert response.status_code == 200
+    assert "PATCH" in response.headers["access-control-allow-methods"]
+
+
 def test_list_sessions_empty(client):
     r = client.get("/assess", headers=_HEADERS)
     assert r.status_code == 200
@@ -97,12 +110,13 @@ def test_start_assessment_strips_target_whitespace(client):
 
     with (
         patch.object(server, "get_ollama_status", return_value={"running": True, "models": []}),
+        patch.object(server, "validate_target_or_raise", return_value={"host": "demo.testfire.net", "resolved_ips": ["65.61.137.117"]}),
         patch.object(server, "run_pipeline_background", side_effect=fake_pipeline),
     ):
         r = client.post(
             "/assess",
             headers={**_HEADERS, "Content-Type": "application/json"},
-            json={"target": " demo.testfire.net ", "domains": [" demo.testfire.net ", " *.testfire.net "], "mode": " full "},
+            json={"target": " demo.testfire.net ", "mode": " full "},
         )
     assert r.status_code == 200
     data = r.json()
@@ -119,12 +133,13 @@ def test_start_assessment_normalizes_url_target(client):
 
     with (
         patch.object(server, "get_ollama_status", return_value={"running": True, "models": []}),
+        patch.object(server, "validate_target_or_raise", return_value={"host": "demo.testfire.net", "resolved_ips": ["65.61.137.117"]}),
         patch.object(server, "run_pipeline_background", side_effect=fake_pipeline),
     ):
         r = client.post(
             "/assess",
             headers={**_HEADERS, "Content-Type": "application/json"},
-            json={"target": "https://demo.testfire.net/default.aspx", "domains": ["https://demo.testfire.net"], "mode": "full"},
+            json={"target": "https://demo.testfire.net/default.aspx", "mode": "full"},
         )
     assert r.status_code == 200
     data = r.json()
@@ -133,20 +148,27 @@ def test_start_assessment_normalizes_url_target(client):
     assert session["target"] == "demo.testfire.net"
 
 
-def test_start_assessment_auto_scopes_literal_ip_target(client):
+def test_start_assessment_blocks_loopback_by_default(client):
     import server
 
-    async def fake_pipeline(*args, **kwargs):
-        return None
-
-    with (
-        patch.object(server, "get_ollama_status", return_value={"running": True, "models": []}),
-        patch.object(server, "run_pipeline_background", side_effect=fake_pipeline),
-    ):
+    with patch.object(server, "get_ollama_status", return_value={"running": True, "models": []}):
         r = client.post(
             "/assess",
             headers={**_HEADERS, "Content-Type": "application/json"},
-            json={"target": "127.0.0.1", "domains": [], "ip_ranges": [], "mode": "full"},
+            json={"target": "127.0.0.1", "mode": "full"},
         )
-    assert r.status_code == 200
-    assert r.json()["target"] == "127.0.0.1"
+    assert r.status_code == 400
+    assert "blocked" in r.json()["detail"].lower()
+
+
+def test_start_assessment_rejects_client_scope_override(client):
+    import server
+
+    with patch.object(server, "get_ollama_status", return_value={"running": True, "models": []}):
+        r = client.post(
+            "/assess",
+            headers={**_HEADERS, "Content-Type": "application/json"},
+            json={"target": "example.com", "domains": ["example.com"], "mode": "full"},
+        )
+    assert r.status_code == 400
+    assert "client-provided scope" in r.json()["detail"].lower()

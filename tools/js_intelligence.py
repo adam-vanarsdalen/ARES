@@ -24,6 +24,7 @@ import urllib.error
 from html.parser import HTMLParser
 from utils.config import JS_INTEL_BUDGET
 from utils.scope_validator import ScopeValidator
+from utils.http_safety import safe_http_request
 
 
 logger = logging.getLogger(__name__)
@@ -159,71 +160,49 @@ class ScriptTagParser(HTMLParser):
             self._current_script.append(data)
 
 
-def _fetch(url: str, timeout: int = 10) -> str:
-    """Fetch URL with bounded redirects, return text content or empty string."""
+def _fetch(
+    url: str,
+    timeout: int = 10,
+    scope: ScopeValidator | None = None,
+    blocked_redirects: list[dict] | None = None,
+) -> str:
+    """Fetch text while revalidating every redirect destination."""
+    if scope is None:
+        raise ValueError("A scope validator is required for JavaScript collection")
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-
-    class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):
-            return None
-
-    def _urlopen_no_redirect(req: urllib.request.Request):
-        opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=ctx))
-        return opener.open(req, timeout=timeout)
-
-    current = url
-    visited: set[str] = set()
-    redirects = 0
-
-    while True:
-        if current in visited:
-            logger.warning("js_intelligence: redirect loop detected for %r", current)
-            return ""
-        visited.add(current)
-
-        parsed = urllib.parse.urlparse(current)
-        if parsed.scheme not in ("http", "https"):
-            return ""
-
-        req = urllib.request.Request(current, headers={
+    result = safe_http_request(
+        url,
+        scope,
+        timeout=timeout,
+        headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "*/*"
-        })
-
-        try:
-            with _urlopen_no_redirect(req) as resp:
-                ct = resp.headers.get("Content-Type", "")
-                if "text" not in ct and "javascript" not in ct and "json" not in ct:
-                    return ""
-                clen = resp.headers.get("Content-Length")
-                try:
-                    if clen is not None and int(clen) > _MAX_FETCH_BYTES:
-                        logger.warning("js_intelligence: content too large (%s bytes) for %r; truncating", clen, current)
-                except Exception:
-                    pass
-                return resp.read(_MAX_FETCH_BYTES).decode("utf-8", errors="ignore")
-        except urllib.error.HTTPError as e:
-            code = int(getattr(e, "code", 0) or 0)
-            if 300 <= code < 400:
-                loc = e.headers.get("Location") if getattr(e, "headers", None) else None
-                if not loc:
-                    return ""
-                current_scheme = urllib.parse.urlparse(current).scheme
-                next_url = urllib.parse.urljoin(current, loc)
-                next_scheme = urllib.parse.urlparse(next_url).scheme
-                if current_scheme == "https" and next_scheme == "http":
-                    return ""
-                redirects += 1
-                if redirects > _MAX_REDIRECTS:
-                    logger.warning("js_intelligence: max redirects exceeded for %r", url)
-                    return ""
-                current = next_url
-                continue
-            return ""
-        except Exception:
-            return ""
+            "Accept": "*/*",
+        },
+        max_body_bytes=_MAX_FETCH_BYTES,
+        max_redirects=_MAX_REDIRECTS,
+        ssl_context=ctx,
+    )
+    if result.blocked_redirect:
+        if blocked_redirects is not None:
+            blocked_redirects.append(result.blocked_redirect)
+        logger.warning("js_intelligence: redirect blocked for %r", url)
+        return ""
+    if result.error:
+        if result.error in {"redirect_loop", "max_redirects"}:
+            logger.warning("js_intelligence: %s for %r", result.error, url)
+        return ""
+    content_type = result.headers.get("Content-Type", result.headers.get("content-type", ""))
+    if "text" not in content_type and "javascript" not in content_type and "json" not in content_type:
+        return ""
+    content_length = result.headers.get("Content-Length", result.headers.get("content-length"))
+    try:
+        if content_length is not None and int(content_length) > _MAX_FETCH_BYTES:
+            logger.warning("js_intelligence: content too large (%s bytes) for %r; truncating", content_length, result.url)
+    except (TypeError, ValueError):
+        pass
+    return result.body.decode("utf-8", errors="ignore")
 
 
 _STATIC_ASSET_EXTENSIONS = (
@@ -438,6 +417,7 @@ def _crawl_html_surface(
     script_urls = []
     inline_scripts = []
     page_candidates = []
+    blocked_redirects = []
 
     while queue and len(pages) < max_pages:
         if time.monotonic() - started_at >= JS_INTEL_TOTAL_BUDGET_S:
@@ -451,7 +431,12 @@ def _crawl_html_surface(
             continue
         page_candidates.append(page_url)
 
-        html = known_html or _fetch(page_url, timeout=timeout)
+        html = known_html or _fetch(
+            page_url,
+            timeout=timeout,
+            scope=scope,
+            blocked_redirects=blocked_redirects,
+        )
         if not html:
             continue
 
@@ -495,6 +480,7 @@ def _crawl_html_surface(
         "script_urls": script_urls,
         "inline_scripts": inline_scripts,
         "page_candidates": page_candidates,
+        "blocked_redirects": blocked_redirects,
     }
 
 
@@ -525,6 +511,7 @@ def js_intelligence(url: str, scope: ScopeValidator, max_scripts: int = 8, seed_
                 "secrets": [], "internal_hosts": [], "cloud_resources": [], "script_count": 0,
                 "forms": [], "form_count": 0, "pages_crawled": [],
                 "page_candidates": crawl["page_candidates"] or _candidate_page_urls(url, fallback_urls),
+                "blocked_redirects": crawl["blocked_redirects"],
                 "timeout_profile": {"page_fetch_timeout": page_fetch_timeout, "script_fetch_timeout": script_fetch_timeout}}
 
     fetch_source_url = crawl["pages"][0]["url"]
@@ -549,6 +536,7 @@ def js_intelligence(url: str, scope: ScopeValidator, max_scripts: int = 8, seed_
         "pages_crawled": crawl["pages"],
         "page_candidates": crawl["page_candidates"] or [fetch_source_url],
         "timeout_profile": {"page_fetch_timeout": page_fetch_timeout, "script_fetch_timeout": script_fetch_timeout},
+        "blocked_redirects": crawl["blocked_redirects"],
     }
 
     # Analyze inline scripts
@@ -571,7 +559,12 @@ def js_intelligence(url: str, scope: ScopeValidator, max_scripts: int = 8, seed_
         valid, _ = scope.validate(script_url)
         if not valid:
             continue
-        js_content = _fetch(script_url, timeout=script_fetch_timeout)
+        js_content = _fetch(
+            script_url,
+            timeout=script_fetch_timeout,
+            scope=scope,
+            blocked_redirects=all_findings["blocked_redirects"],
+        )
         if not js_content:
             continue
 

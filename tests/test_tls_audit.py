@@ -30,11 +30,17 @@ def _scope():
     return ScopeValidator(Scope(domains=["example.com"]))
 
 
-def _cert(not_after="Jan  1 00:00:00 2035 GMT", subject_cn="example.com", issuer_cn="Example CA", sans=None):
+def _cert(
+    not_after="Jan  1 00:00:00 2035 GMT",
+    not_before="Jan  1 00:00:00 2024 GMT",
+    subject_cn="example.com",
+    issuer_cn="Example CA",
+    sans=None,
+):
     return {
         "subject": ((("commonName", subject_cn),),),
         "issuer": ((("commonName", issuer_cn),),),
-        "notBefore": "Jan  1 00:00:00 2024 GMT",
+        "notBefore": not_before,
         "notAfter": not_after,
         "subjectAltName": tuple(("DNS", item) for item in (sans or [subject_cn])),
     }
@@ -43,6 +49,7 @@ def _cert(not_after="Jan  1 00:00:00 2035 GMT", subject_cn="example.com", issuer
 def test_expired_certificate_generates_finding():
     with (
         mock.patch.object(tls, "_handshake", return_value=_FakeTLSSock(cert=_cert(not_after="Jan  1 00:00:00 2020 GMT"))),
+        mock.patch.object(tls, "_validated_handshake", return_value={"trusted": True, "hostname_validated": True}),
         mock.patch.object(tls, "_protocol_support", return_value={p: "refused" for p in tls.PROTOCOLS}),
     ):
         out = tls_audit("https://example.com", _scope())
@@ -54,6 +61,7 @@ def test_expired_certificate_generates_finding():
 def test_tls10_accepted_generates_finding():
     with (
         mock.patch.object(tls, "_handshake", return_value=_FakeTLSSock(cert=_cert())),
+        mock.patch.object(tls, "_validated_handshake", return_value={"trusted": True, "hostname_validated": True}),
         mock.patch.object(tls, "_protocol_support", return_value={"TLSv1.0": "accepted", "TLSv1.1": "refused", "TLSv1.2": "accepted", "TLSv1.3": "accepted"}),
     ):
         out = tls_audit("https://example.com", _scope())
@@ -65,6 +73,7 @@ def test_tls10_accepted_generates_finding():
 def test_hostname_mismatch_generates_finding():
     with (
         mock.patch.object(tls, "_handshake", return_value=_FakeTLSSock(cert=_cert(subject_cn="other.test", sans=["other.test"]))),
+        mock.patch.object(tls, "_validated_handshake", return_value={"trusted": True, "hostname_validated": True}),
         mock.patch.object(tls, "_protocol_support", return_value={p: "refused" for p in tls.PROTOCOLS}),
     ):
         out = tls_audit("https://example.com", _scope())
@@ -84,6 +93,7 @@ def test_out_of_scope_tls_audit_is_blocked_before_socket_use():
 def test_all_protocol_errors_mark_tls_coverage_failed():
     with (
         mock.patch.object(tls, "_handshake", side_effect=TimeoutError("timeout")),
+        mock.patch.object(tls, "_validated_handshake", side_effect=TimeoutError("timeout")),
         mock.patch.object(tls, "_protocol_support", return_value={p: "error" for p in tls.PROTOCOLS}),
     ):
         out = tls_audit("https://example.com", _scope())
@@ -91,3 +101,23 @@ def test_all_protocol_errors_mark_tls_coverage_failed():
     assert out["coverage"]["certificate"] == "failed"
     assert out["coverage"]["protocols"] == "failed"
     assert out["coverage"]["protocol_error"] == "all_protocol_checks_failed"
+
+
+def test_not_yet_valid_missing_san_and_untrusted_are_reported():
+    cert = _cert(not_before="Jan  1 00:00:00 2035 GMT", sans=[])
+    cert["subjectAltName"] = ()
+    with (
+        mock.patch.object(tls, "_handshake", return_value=_FakeTLSSock(cert=cert)),
+        mock.patch.object(
+            tls,
+            "_validated_handshake",
+            return_value={"trusted": False, "hostname_validated": True, "error": "self signed"},
+        ),
+        mock.patch.object(tls, "_protocol_support", return_value={p: "refused" for p in tls.PROTOCOLS}),
+    ):
+        out = tls_audit("https://example.com", _scope())
+
+    titles = {finding["title"] for finding in out["findings"]}
+    assert "TLS certificate is not yet valid" in titles
+    assert "TLS certificate missing SAN" in titles
+    assert "Untrusted TLS certificate chain" in titles

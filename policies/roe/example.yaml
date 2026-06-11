@@ -1,0 +1,29 @@
+engagement:
+  name: Authorized ARES example engagement
+  allowed_domains:
+    - example.com
+    - "*.example.com"
+  allowed_ips: []
+  allowed_cidrs: []
+  forbidden_domains: []
+  forbidden_paths:
+    - /logout
+  allowed_methods:
+    - GET
+    - HEAD
+    - OPTIONS
+    - TRACE
+  risky_methods_allowed: []
+  explicitly_allowed_risky_paths: []
+  max_requests_per_minute: 30
+  allowed_profiles:
+    - passive
+    - recon
+    - advanced
+  advanced_verification: true
+  lab_targets: []
+  scan_windows: []
+  allowed_capabilities: []
+  allowed_nuclei_template_ids: []
+  allow_uninspected_nuclei_templates: false
+  notes: Replace this example scope with the written authorization for the engagement.

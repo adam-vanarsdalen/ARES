@@ -100,7 +100,6 @@ def _metasploit_check(cve_id: str) -> dict:
     Falls back to a simple keyword check against ExploitDB.
     """
     # Query ExploitDB search (public, no auth)
-    cve_clean = cve_id.replace("CVE-", "").replace("-", " ")
     url = f"https://www.exploit-db.com/search?cve={urllib.parse.quote(cve_id)}&draw=1&columns[0][data]=date_published&order[0][column]=0&order[0][dir]=desc&start=0&length=5"
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0",

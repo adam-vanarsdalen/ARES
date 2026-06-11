@@ -6,11 +6,10 @@ Designed for: CTF environments, authorized bug bounty targets, your own infrastr
 """
 
 import json
-import subprocess
 import urllib.request
 import urllib.parse
 import ssl
-from ollama_compat import OllamaClient as Anthropic, DEFAULT_MODEL, ollama_chat
+from ollama_compat import OllamaClient as Anthropic, DEFAULT_MODEL
 from utils.config import ENABLE_MANUAL_SECRET_VERIFY, OLLAMA_MAX_RETRIES, OLLAMA_TIMEOUT
 from utils.scope_validator import ScopeValidator, Scope
 from tools.secret_workbench import verify_operator_secret

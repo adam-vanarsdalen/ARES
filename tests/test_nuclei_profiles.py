@@ -10,7 +10,7 @@ def _scope():
     return ScopeValidator(Scope(domains=["example.com"]))
 
 
-def _roe(profiles=None, capabilities=None):
+def _roe(profiles=None, capabilities=None, template_ids=None, allow_uninspected=False):
     return parse_roe_policy({
         "engagement": {
             "allowed_domains": ["example.com"],
@@ -18,6 +18,8 @@ def _roe(profiles=None, capabilities=None):
             "allowed_methods": ["GET", "HEAD"],
             "advanced_verification": True,
             "allowed_capabilities": capabilities or [],
+            "allowed_nuclei_template_ids": template_ids or [],
+            "allow_uninspected_nuclei_templates": allow_uninspected,
         }
     })
 
@@ -57,13 +59,36 @@ def test_custom_requires_allowlist_and_blocks_dangerous_template_tags():
     dangerous = nuclei.resolve_nuclei_policy(
         "custom",
         "custom",
-        _roe(["custom"], ["nuclei_custom"]),
+        _roe(["custom"], ["nuclei_custom"], ["dangerous-template"]),
         ["dangerous-template"],
         [{"id": "dangerous-template", "tags": ["rce", "cve"]}],
     )
     assert missing["status"] == "blocked_by_roe"
     assert dangerous["status"] == "blocked_by_roe"
     assert dangerous["blocked_templates"]["dangerous-template"] == ["rce"]
+
+
+def test_custom_fails_closed_when_template_metadata_is_missing():
+    policy = nuclei.resolve_nuclei_policy(
+        "custom",
+        "custom",
+        _roe(["custom"], ["nuclei_custom"], ["unknown-template"]),
+        ["unknown-template"],
+        [],
+    )
+    assert policy["allowed"] is False
+    assert policy["uninspected_templates"] == ["unknown-template"]
+
+
+def test_custom_can_explicitly_allow_uninspected_template():
+    policy = nuclei.resolve_nuclei_policy(
+        "custom",
+        "custom",
+        _roe(["custom"], ["nuclei_custom"], ["known-exception"], allow_uninspected=True),
+        ["known-exception"],
+        [],
+    )
+    assert policy["allowed"] is True
 
 
 def test_results_normalize_into_findings():
@@ -112,6 +137,34 @@ def test_runner_uses_jsonl_rate_limits_and_disables_interactsh():
     command = run.call_args.args[0]
     assert "-jsonl" in command
     assert "-rl" in command
+    assert command[command.index("-rl") + 1] == "60"
+    assert command[command.index("-rld") + 1] == "60s"
     assert "-ni" in command
     assert result["status"] == "confirmed"
     assert len(result["findings"]) == 1
+
+
+def test_runner_preserves_one_request_per_minute():
+    class _Process:
+        stdout = ""
+        stderr = ""
+        returncode = 0
+
+    roe = _roe()
+    roe.max_requests_per_minute = 1
+    with (
+        patch("tools.nuclei_runner.subprocess.run", return_value=_Process()) as run,
+        patch("utils.roe.ENABLE_ADVANCED_VERIFICATION", True),
+    ):
+        nuclei.run_nuclei(
+            "https://example.com",
+            _scope(),
+            "advanced",
+            roe=roe,
+            nuclei_profile="moderate",
+            enabled=True,
+            binary="/usr/local/bin/nuclei",
+        )
+    command = run.call_args.args[0]
+    assert command[command.index("-rl") + 1] == "1"
+    assert command[command.index("-rld") + 1] == "60s"

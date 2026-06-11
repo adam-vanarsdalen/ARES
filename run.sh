@@ -32,7 +32,7 @@ fi
 source venv/bin/activate
 
 # Install dependencies
-pip install -q -r requirements.txt
+python -m pip install -q -r requirements.txt -c constraints.txt
 
 # Prefer the operator's Ollama Cloud model unless explicitly overridden.
 export ARES_OLLAMA_MODEL="${ARES_OLLAMA_MODEL:-qwen3.5:9b}"
@@ -52,4 +52,4 @@ echo ""
 echo "  Ollama model: ${ARES_OLLAMA_MODEL}"
 echo ""
 
-uvicorn server:app --reload --host 0.0.0.0 --port 8001
+uvicorn server:app --reload --host 127.0.0.1 --port 8001

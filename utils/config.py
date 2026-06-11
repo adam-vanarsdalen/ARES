@@ -122,7 +122,8 @@ NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM = _bool("ARES_NUCLEI_REQUIRE_ALLOWLIST_FOR_C
 ENABLE_EXTERNAL_PLUGINS = _bool("ARES_ENABLE_EXTERNAL_PLUGINS", False)
 ENABLE_OTEL = _bool("ARES_ENABLE_OTEL", False)
 OTEL_EXPORTER_OTLP_ENDPOINT = _str("ARES_OTEL_EXPORTER_OTLP_ENDPOINT", "")
-ROE_POLICY_PATH = _str("ARES_ROE_POLICY_PATH", "")
+ROE_POLICY_ID = _str("ARES_ROE_POLICY_ID", "")
+ROE_POLICY_DIR = _str("ARES_ROE_POLICY_DIR", "policies/roe")
 
 SAFE_TARGETS = set(_list(
     "ARES_SAFE_TARGETS",
@@ -183,6 +184,7 @@ def as_dict() -> dict:
         "enable_external_plugins": ENABLE_EXTERNAL_PLUGINS,
         "enable_otel": ENABLE_OTEL,
         "otel_endpoint_configured": bool(OTEL_EXPORTER_OTLP_ENDPOINT),
-        "roe_policy_configured": bool(ROE_POLICY_PATH),
+        "roe_policy_configured": bool(ROE_POLICY_ID),
+        "roe_policy_dir": ROE_POLICY_DIR,
         "event_queue_size": EVENT_QUEUE_SIZE,
     }

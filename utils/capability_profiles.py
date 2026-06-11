@@ -56,6 +56,7 @@ ADVANCED_ACTIONS = RECON_ACTIONS | {
     "cors_verification",
     "api_endpoint_discovery",
     "auth_panel_discovery",
+    "secret_verification",
     "nuclei_moderate",
 }
 

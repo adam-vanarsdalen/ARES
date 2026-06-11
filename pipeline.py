@@ -25,7 +25,6 @@ from utils.evidence_model import (
     make_coverage,
     make_evidence,
     merge_subdomains,
-    severity_to_priority,
 )
 from utils.report_generator import generate_report
 from utils.capability_profiles import CapabilityProfile, profile_summary, resolve_profile
@@ -38,6 +37,7 @@ from plugins.registry import default_registry
 from utils.audit_log import AuditLog
 from utils.replay import build_replay, write_replay
 from utils.scorecard import build_executive_scorecard
+from utils.http_safety import safe_http_request
 from utils.config import (
     ASSET_INVENTORY_MAX_HTTP_PROBES,
     ENABLE_NUCLEI,
@@ -47,7 +47,7 @@ from utils.config import (
     PASSIVE_HTTP_ALLOWED,
     RECON_ADDITIONAL_TARGET_MAX,
     PROFILE,
-    ROE_POLICY_PATH,
+    ROE_POLICY_ID,
     REDTEAM_MAX_VERIFICATIONS,
     SUBDOMAIN_WORDLIST_MAX,
     SUBDOMAIN_WORDLIST_PATH,
@@ -1284,7 +1284,7 @@ class ARESPipeline:
         phase_fn,
         emit_fn,
         profile=None,
-        roe_policy_path="",
+        policy_id="",
     ):
         self.target = target.strip()
         self.scope = scope
@@ -1292,8 +1292,8 @@ class ARESPipeline:
         if self.mode not in VALID_MODES:
             raise ValueError(f"Invalid ARES mode: {self.mode}")
         self.profile = resolve_profile(profile or PROFILE, legacy_mode=self.mode)
-        self.roe_policy_path = (roe_policy_path or ROE_POLICY_PATH or "").strip()
-        self.roe = load_roe_policy(self.roe_policy_path)
+        self.policy_id = (policy_id or ROE_POLICY_ID or "").strip()
+        self.roe = load_roe_policy(self.policy_id)
         self.authorization_gaps = []
         self.audit_events = []
         self.session = session
@@ -1331,7 +1331,12 @@ class ARESPipeline:
             emit_fn(event_type, data)
 
         self.emit = tracked_emit
-        self.validator = ScopeValidator(scope)
+        self.validator = ScopeValidator(
+            scope,
+            roe=self.roe,
+            profile=self.profile.value,
+            enforce_resolution=True,
+        )
 
     def aborted(self):
         return self.session.get("abort", False)
@@ -1507,7 +1512,11 @@ class ARESPipeline:
             evidence_ledger,
             self.llm_metadata,
         )
-        replay_path = write_replay(reports_dir, replay)
+        try:
+            replay_path = write_replay(reports_dir, replay)
+        except Exception as exc:
+            replay_path = ""
+            self.log("WARN", f"Replay export failed: {exc}", "orange")
         redteam["audit_log"] = self.audit_log.serialize()
         redteam["replay_path"] = replay_path
         return {"osint": osint, "recon": recon, "redteam": redteam, "report_path": report_path}
@@ -1538,7 +1547,7 @@ class ARESPipeline:
             "profile": profile_summary(self.profile),
             "roe": {
                 "loaded": self.roe is not None,
-                "policy_path": self.roe.source_path if self.roe else "",
+                "policy_id": self.policy_id,
                 "engagement_name": self.roe.name if self.roe else "",
                 "allowed_profiles": self.roe.allowed_profiles if self.roe else [],
             },
@@ -1610,7 +1619,8 @@ class ARESPipeline:
         self.log("TOOL", f"dns_lookup({target})", "dim")
         dns_data = await asyncio.to_thread(dns_lookup, target, self.validator)
         self.emit("tool_result", {"tool": "dns_lookup", "data": dns_data})
-        if self.aborted(): return {}
+        if self.aborted():
+            return {}
 
         internetdb_data = {}
         resolved_ip = dns_data.get("resolved_ip", "")
@@ -1644,7 +1654,8 @@ class ARESPipeline:
         self.log("TOOL", f"whois_lookup({target})", "dim")
         whois_data = await asyncio.to_thread(whois_lookup, target, self.validator)
         self.emit("tool_result", {"tool": "whois_lookup", "data": whois_data})
-        if self.aborted(): return {}
+        if self.aborted():
+            return {}
 
         reverse_ip_data = {
             "query": resolved_ip or target,
@@ -1687,7 +1698,8 @@ class ARESPipeline:
             for sub in found_subs:
                 self.log("OSINT", f"  -> Subdomain: {sub['subdomain']} ({sub['ip']})", "green")
             self.emit("tool_result", {"tool": "subdomain_enumerate", "data": subdomain_data})
-            if self.aborted(): return {}
+            if self.aborted():
+                return {}
 
         # ── Certificate Transparency (NEW) ────────────────────────────────────
         self.log("TOOL", f"cert_transparency_recon({target})", "dim")
@@ -1703,7 +1715,8 @@ class ARESPipeline:
         except Exception as e:
             self.log("WARN", f"CT recon failed: {e}", "orange")
             ct_data = {}
-        if self.aborted(): return {}
+        if self.aborted():
+            return {}
 
         if self.mode == "passive_only":
             passive_url_data = {
@@ -1772,7 +1785,8 @@ class ARESPipeline:
         if http_data.get("cpe_strings"):
             self.log("OSINT", f"  -> CPE strings: {http_data['cpe_strings']}", "green")
         self.emit("tool_result", {"tool": "http_probe", "data": http_data})
-        if self.aborted(): return {}
+        if self.aborted():
+            return {}
 
         # Passive URL Discovery
         passive_seed_url = http_data.get("url") or f"https://{target}"
@@ -1798,7 +1812,8 @@ class ARESPipeline:
         except Exception as e:
             self.log("WARN", f"Passive URL discovery failed: {e}", "orange")
             passive_url_data = {}
-        if self.aborted(): return {}
+        if self.aborted():
+            return {}
 
         # ── JS Intelligence (NEW) ─────────────────────────────────────────────
         js_seed_url = http_data.get("url") or f"https://{target}"
@@ -1840,7 +1855,8 @@ class ARESPipeline:
             self.log("WARN", f"JS intelligence failed: {e}", "orange")
             js_data = {}
             secret_queue = []
-        if self.aborted(): return {}
+        if self.aborted():
+            return {}
 
         asset_inventory = build_asset_inventory(
             target,
@@ -1857,7 +1873,8 @@ class ARESPipeline:
         if probe_assets:
             self.log("OSINT", f"  -> Asset inventory: probing {len(probe_assets)} high-priority in-scope hosts", "orange")
         for asset in probe_assets:
-            if self.aborted(): return {}
+            if self.aborted():
+                return {}
             self.log("TOOL", f"http_probe({asset['url']}) [asset:{asset['source']}]", "dim")
             try:
                 probe = await asyncio.to_thread(http_probe, asset["url"], self.validator)
@@ -2043,7 +2060,8 @@ Return ONLY valid JSON — no markdown, no preamble:
         else:
             port_data = {"open_ports": [], "detected_tech": [], "service_inventory": [], "status": "skipped", "reason": f"mode={self.mode}, enable_nmap={ENABLE_NMAP}"}
             self.log("RECON", "  -> Port scan skipped by mode/config policy", "dim")
-        if self.aborted(): return {}
+        if self.aborted():
+            return {}
 
         # Version disclosure and framework exposure
         version_seed_url = osint_data.get("collection_summary", {}).get("http_url") or f"https://{target}"
@@ -2062,7 +2080,8 @@ Return ONLY valid JSON — no markdown, no preamble:
             self.log("WARN", f"Version disclosure probe failed: {e}", "orange")
             version_data = {"base_url": version_seed_url, "paths": [], "findings": [], "coverage": {"error": str(e)}}
         osint_data["_version_disclosure"] = version_data
-        if self.aborted(): return {}
+        if self.aborted():
+            return {}
 
         additional_targets = build_additional_recon_targets(
             target,
@@ -2080,7 +2099,8 @@ Return ONLY valid JSON — no markdown, no preamble:
         if additional_targets:
             self.log("RECON", f"  -> Additional HTTP targets from OSINT: {len(additional_targets)}", "orange")
         for item in additional_targets:
-            if self.aborted(): return {}
+            if self.aborted():
+                return {}
             self.log("TOOL", f"http_probe({item['url']}) [additional:{item['source']}]", "dim")
             try:
                 probe = await asyncio.to_thread(http_probe, item["url"], self.validator)
@@ -2249,7 +2269,8 @@ Return ONLY valid JSON — no markdown, no preamble:
                     self.emit("tool_result", {"tool": "cve_lookup", "cpe": cpe, "data": cves})
                 except Exception as e:
                     self.log("WARN", f"CVE lookup failed for {cpe}: {e}", "orange")
-                if self.aborted(): return {}
+                if self.aborted():
+                    return {}
                 await asyncio.sleep(0.6)
         elif tech_stack:
             for tech in osint_data.get("technology_stack", [])[:3]:
@@ -2264,7 +2285,8 @@ Return ONLY valid JSON — no markdown, no preamble:
                     self.emit("tool_result", {"tool": "cve_lookup", "tech": tech, "data": cves})
                 except Exception as e:
                     self.log("WARN", f"CVE lookup failed for {tech}: {e}", "orange")
-                if self.aborted(): return {}
+                if self.aborted():
+                    return {}
                 await asyncio.sleep(0.6)
 
         cve_results = _dedupe_cves(cve_results)
@@ -2482,7 +2504,8 @@ Use only provided evidence. Do not invent products, versions, open ports, or rec
         for finding in findings_to_test:
             if not advanced_profile and len(test_results) >= REDTEAM_MAX_VERIFICATIONS:
                 break
-            if self.aborted(): break
+            if self.aborted():
+                break
             name = finding.get("title", "Unknown")
             self.log("TOOL", f"test_vulnerability({name[:50]})", "dim")
             await asyncio.sleep(0.8)
@@ -2780,35 +2803,41 @@ def _discover_auth_panels(url: str, scope: ScopeValidator) -> dict:
 
 
 def _test_cors(url: str, scope: ScopeValidator) -> dict:
-    import urllib.request, ssl
+    import ssl
     scope.assert_in_scope(url)
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     try:
-        req = urllib.request.Request(url, headers={
-            "Origin": "https://evil.example.com", "User-Agent": "Mozilla/5.0"
-        })
-        with urllib.request.urlopen(req, context=ctx, timeout=8) as resp:
-            acao = resp.headers.get("Access-Control-Allow-Origin", "")
-            credentials = str(resp.headers.get("Access-Control-Allow-Credentials", "")).lower() == "true"
-            reflected_origin = acao == "https://evil.example.com"
-            misconfigured = acao == "*" or reflected_origin
-            status = (
-                VerificationStatus.CONFIRMED
-                if reflected_origin and credentials
-                else VerificationStatus.STRONGLY_INDICATED
-                if misconfigured
-                else VerificationStatus.NOT_REPRODUCED
-            )
-            return verification_result(
-                status,
-                "Repeat from a researcher-controlled origin in a browser and confirm whether authenticated response data is readable.",
-                acao=acao,
-                allow_credentials=credentials,
-                origin_reflected=reflected_origin,
-                misconfigured=misconfigured,
-            )
+        response = safe_http_request(
+            url,
+            scope,
+            timeout=8,
+            headers={"Origin": "https://evil.example.com", "User-Agent": "Mozilla/5.0"},
+            max_body_bytes=0,
+            ssl_context=ctx,
+        )
+        if response.blocked_redirect:
+            raise ValueError("Redirect blocked by scope policy")
+        acao = response.headers.get("Access-Control-Allow-Origin", "")
+        credentials = str(response.headers.get("Access-Control-Allow-Credentials", "")).lower() == "true"
+        reflected_origin = acao == "https://evil.example.com"
+        misconfigured = acao == "*" or reflected_origin
+        status = (
+            VerificationStatus.CONFIRMED
+            if reflected_origin and credentials
+            else VerificationStatus.STRONGLY_INDICATED
+            if misconfigured
+            else VerificationStatus.NOT_REPRODUCED
+        )
+        return verification_result(
+            status,
+            "Repeat from a researcher-controlled origin in a browser and confirm whether authenticated response data is readable.",
+            acao=acao,
+            allow_credentials=credentials,
+            origin_reflected=reflected_origin,
+            misconfigured=misconfigured,
+        )
     except Exception as e:
         return verification_result(
             VerificationStatus.NEEDS_MANUAL_FOLLOWUP,
@@ -2820,8 +2849,6 @@ def _test_cors(url: str, scope: ScopeValidator) -> dict:
 
 def _request_headers(url: str, scope: ScopeValidator, method: str = "HEAD", extra_headers: dict | None = None) -> dict:
     import ssl
-    import urllib.error
-    import urllib.request
 
     scope.assert_in_scope(url)
     ctx = ssl.create_default_context()
@@ -2830,12 +2857,23 @@ def _request_headers(url: str, scope: ScopeValidator, method: str = "HEAD", extr
     headers = {"User-Agent": "Mozilla/5.0"}
     if extra_headers:
         headers.update(extra_headers)
-    req = urllib.request.Request(url, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, context=ctx, timeout=8) as resp:
-            return {"url": url, "status_code": resp.status, "headers": dict(resp.headers)}
-    except urllib.error.HTTPError as exc:
-        return {"url": url, "status_code": exc.code, "headers": dict(exc.headers or {}), "error": str(exc)}
+        response = safe_http_request(
+            url,
+            scope,
+            method=method,
+            timeout=8,
+            headers=headers,
+            max_body_bytes=0,
+            ssl_context=ctx,
+        )
+        return {
+            "url": response.url,
+            "status_code": response.status,
+            "headers": response.headers,
+            "blocked_redirect": response.blocked_redirect,
+            "error": response.error,
+        }
     except Exception as exc:
         return {"url": url, "error": str(exc), "headers": {}}
 

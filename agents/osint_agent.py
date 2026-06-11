@@ -5,7 +5,7 @@ on a target, deciding which tools to use and in what order.
 """
 
 import json
-from ollama_compat import OllamaClient as Anthropic, DEFAULT_MODEL, ollama_chat
+from ollama_compat import OllamaClient as Anthropic, DEFAULT_MODEL
 from utils.config import OLLAMA_MAX_RETRIES, OLLAMA_TIMEOUT
 from utils.scope_validator import ScopeValidator, Scope
 from tools.network_tools import (

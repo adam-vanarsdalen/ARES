@@ -152,7 +152,7 @@ Example request:
 curl -s \
   -H "X-ARES-Key: $ARES_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"target":"example.com","domains":["example.com","*.example.com"],"mode":"full"}' \
+  -d '{"target":"example.com","mode":"full","policy_id":"example"}' \
   http://localhost:8001/assess
 ```
 
@@ -173,7 +173,8 @@ curl -s \
 | `ARES_API_KEY` | string | none | Required static API key for authenticated routes. Never commit real values. |
 | `ARES_ENV` | string | `prod` | Runtime mode. In `prod`, startup refuses an empty API key. |
 | `ARES_PROFILE` | enum | `recon` | Default capability profile: `passive`, `recon`, `advanced`, `lab`, or `custom`. |
-| `ARES_ROE_POLICY_PATH` | path | none | Optional YAML Rules of Engagement policy loaded for capability decisions. |
+| `ARES_ROE_POLICY_ID` | ID | none | Optional server-managed RoE policy ID from `ARES_ROE_POLICY_DIR`; client filesystem paths are never accepted. |
+| `ARES_ROE_POLICY_DIR` | path | `policies/roe` | Approved server-side directory for RoE policy YAML files. |
 | `ARES_ENABLE_ADVANCED_VERIFICATION` | boolean | `false` | Enables the advanced profile capability gate. RoE is still required by default. |
 | `ARES_REQUIRE_ROE_FOR_ADVANCED` | boolean | `true` | Requires a loaded RoE policy before advanced verification is authorized. |
 | `ARES_ENABLE_LAB_EXPLOIT_SIMULATION` | boolean | `false` | Enables lab-profile simulation capabilities; real public targets remain blocked. |
@@ -244,7 +245,7 @@ curl -s \
 | `ARES_MAX_CONCURRENT_SESSIONS` | integer | `5` | Global cap on running assessments. |
 | `ARES_MAX_SESSIONS_PER_MINUTE` | integer | `10` | New assessment rate limit. |
 | `ARES_EVENT_QUEUE_SIZE` | integer | `1000` | In-memory SSE event queue size per session. |
-| `ARES_SAFE_TARGETS` | comma list | demo targets | Demo/CI-only scope bypass for known public test hosts. Never add internal hosts in production. |
+| `ARES_SAFE_TARGETS` | comma list | demo targets | Demo/CI-only scope shortcut for known public test hosts. Private/reserved DNS results remain blocked. |
 | `ARES_DOCKER` | boolean | `0` | When set to `1`, `run.sh` skips local virtualenv setup. |
 
 Variables present in `.env.example`:
@@ -253,7 +254,8 @@ Variables present in `.env.example`:
 - `ARES_ENV`
 - `ARES_OLLAMA_MODEL`
 - `ARES_PROFILE`
-- `ARES_ROE_POLICY_PATH`
+- `ARES_ROE_POLICY_ID`
+- `ARES_ROE_POLICY_DIR`
 - `ARES_ENABLE_ADVANCED_VERIFICATION`
 - `ARES_REQUIRE_ROE_FOR_ADVANCED`
 - `ARES_ENABLE_LAB_EXPLOIT_SIMULATION`
@@ -323,6 +325,10 @@ make demo-lab-down
 
 The lab binds synthetic services to localhost only. See [labs/README.md](labs/README.md).
 
+Private, loopback, link-local, multicast, and reserved targets are blocked by
+default. Local targets require the `lab` profile and a server-loaded policy ID
+that explicitly lists both the target scope and `lab_targets`.
+
 ## Ollama
 
 The default model is `qwen3.5:9b`. Start Ollama and pull the model:
@@ -335,6 +341,11 @@ ollama pull qwen3.5:9b
 Set `ARES_OLLAMA_BASE_URL` and `ARES_OLLAMA_MODEL` when using another local
 endpoint. Cloud-tagged models may require an Ollama subscription and can return
 HTTP 403; use a locally installed model for an offline demo.
+
+The default Compose file does not publish Ollama to the host. ARES reaches it
+over the internal Docker network at `http://ollama:11434`. Do not expose port
+`11434` publicly. Compose binds the plaintext ARES development endpoint to
+`127.0.0.1:8001`; production deployments must use a trusted TLS reverse proxy.
 
 ## Troubleshooting
 
@@ -363,6 +374,18 @@ In this workspace, if `python` is not on PATH, use:
 ```bash
 PATH=venv/bin:$PATH python -m pytest tests/ -q
 ```
+
+Install the pinned dependency set with:
+
+```bash
+python3 -m pip install -r requirements.txt -c constraints.txt
+python3 -m pip install -r requirements-dev.txt -c constraints.txt
+```
+
+To refresh pins, update the readable minimums in `requirements*.txt`, resolve
+and test them in the project container, replace `constraints.txt` with the
+container's `python -m pip freeze` output, then rerun the full test suite,
+`python -m pip check`, and `python -m pip_audit`.
 
 Test categories include:
 

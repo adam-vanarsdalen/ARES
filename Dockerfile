@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim AS base
+FROM python:3.12.13-slim-bookworm AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap curl && \
@@ -9,8 +9,9 @@ RUN useradd -m -u 1000 ares
 WORKDIR /app
 RUN chown ares:ares /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt constraints.txt ./
+RUN python -m pip install --no-cache-dir --upgrade "pip==26.1.2" && \
+    python -m pip install --no-cache-dir -r requirements.txt -c constraints.txt
 
 COPY --chown=ares:ares . .
 

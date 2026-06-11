@@ -97,7 +97,22 @@ def resolve_nuclei_policy(
         return {"allowed": False, "status": "blocked_by_roe", "reason": "Custom Nuclei requires a loaded RoE policy."}
     if NUCLEI_REQUIRE_ALLOWLIST_FOR_CUSTOM and not template_ids:
         return {"allowed": False, "status": "blocked_by_roe", "reason": "Custom Nuclei requires explicit template IDs."}
+    roe_template_ids = set(getattr(roe, "allowed_nuclei_template_ids", []) or [])
+    if not roe_template_ids or any(template_id not in roe_template_ids for template_id in template_ids):
+        return {
+            "allowed": False,
+            "status": "blocked_by_roe",
+            "reason": "Custom template IDs must be explicitly allowlisted by the RoE.",
+        }
     metadata_by_id = {item.get("id"): item for item in (template_metadata or [])}
+    missing_metadata = sorted(template_id for template_id in template_ids if template_id not in metadata_by_id)
+    if missing_metadata and not getattr(roe, "allow_uninspected_nuclei_templates", False):
+        return {
+            "allowed": False,
+            "status": "blocked_by_roe",
+            "reason": "Custom template metadata is unavailable; governance fails closed.",
+            "uninspected_templates": missing_metadata,
+        }
     dangerous = {
         template_id: sorted(set(metadata_by_id.get(template_id, {}).get("tags", [])) & blocked_tags)
         for template_id in template_ids
@@ -185,14 +200,15 @@ def run_nuclei(
             "evidence": [],
         }
 
-    rate_limit = max(1, int(getattr(roe, "max_requests_per_minute", 60) / 60))
+    rate_limit_per_minute = max(1, int(getattr(roe, "max_requests_per_minute", 60)))
     command = [
         executable,
         "-u", target,
         "-jsonl",
         "-silent",
         "-ni",
-        "-rl", str(rate_limit),
+        "-rl", str(rate_limit_per_minute),
+        "-rld", "60s",
         "-timeout", str(max(1, min(NUCLEI_TIMEOUT, 30))),
         "-etags", ",".join(NUCLEI_BLOCKED_TAGS),
     ]

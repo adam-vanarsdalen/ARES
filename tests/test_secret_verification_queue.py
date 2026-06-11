@@ -115,13 +115,22 @@ def test_full_secret_never_appears_in_markdown_or_json_reports():
     assert "needs_manual_verification" in combined
 
 
-def _reload_server(manual_secret_verify: str):
+def _reload_server(
+    manual_secret_verify: str,
+    *,
+    profile: str = "recon",
+    advanced_enabled: str = "false",
+):
     os.environ["ARES_API_KEY"] = "secret-test-key"
     os.environ["ARES_ENV"] = "dev"
     os.environ["ARES_DB_PATH"] = ":memory:"
     os.environ["ARES_ENABLE_MANUAL_SECRET_VERIFY"] = manual_secret_verify
+    os.environ["ARES_ENABLE_ADVANCED_VERIFICATION"] = advanced_enabled
+    os.environ["ARES_PROFILE"] = profile
+    os.environ["ARES_ROE_POLICY_ID"] = "example"
+    os.environ["ARES_ROE_POLICY_DIR"] = "policies/roe"
     for mod in list(sys.modules):
-        if mod == "server" or mod == "utils.config" or mod == "utils.session_store":
+        if mod in {"server", "utils.config", "utils.session_store", "utils.roe"}:
             sys.modules.pop(mod, None)
     with patch("ollama_compat.check_ollama", return_value={"running": True, "models": []}):
         import server
@@ -141,11 +150,16 @@ def test_manual_secret_verify_endpoint_disabled_returns_404():
 
 
 def test_manual_secret_verify_endpoint_enabled_does_not_persist_or_echo_secret():
-    server, client = _reload_server("true")
+    server, client = _reload_server("true", profile="advanced", advanced_enabled="true")
     response = client.post(
         "/manual/verify-secret",
         headers={"X-ARES-Key": "secret-test-key"},
-        json={"type": "GitHub Token", "secret_value": RAW_GITHUB_TOKEN},
+        json={
+            "type": "GitHub Token",
+            "secret_value": RAW_GITHUB_TOKEN,
+            "policy_id": "example",
+            "operator_confirmation": True,
+        },
     )
 
     assert response.status_code == 200
@@ -159,14 +173,16 @@ def test_manual_secret_verify_endpoint_enabled_does_not_persist_or_echo_secret()
 
 
 def test_manual_secret_verify_requires_advanced_or_custom_profile():
-    _, client = _reload_server("true")
+    _, client = _reload_server("true", profile="recon", advanced_enabled="true")
     response = client.post(
         "/manual/verify-secret",
         headers={"X-ARES-Key": "secret-test-key"},
         json={
             "type": "GitHub Token",
             "provider": "github",
-            "profile": "recon",
+            "profile": "advanced",
+            "policy_id": "example",
+            "operator_confirmation": True,
             "secret_value": RAW_GITHUB_TOKEN,
         },
     )

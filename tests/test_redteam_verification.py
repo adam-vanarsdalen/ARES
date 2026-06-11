@@ -38,7 +38,11 @@ class TestRedteamVerifiers(unittest.TestCase):
         self.validator = pipeline.ScopeValidator(self.scope)  # type: ignore[attr-defined]
 
     def test_exposed_path_verifier_confirms_accessible_panel(self):
-        with patch("urllib.request.urlopen", return_value=_Resp(status=403)):
+        with patch.object(
+            pipeline,
+            "_request_headers",
+            return_value={"status_code": 403, "headers": {}, "url": "https://example.com/admin"},
+        ):
             result = pipeline._test_exposed_path(  # type: ignore[attr-defined]
                 "https://example.com",
                 {"title": "Exposed path /admin", "affected": "/admin", "cvss_score": 7.5},
@@ -50,7 +54,15 @@ class TestRedteamVerifiers(unittest.TestCase):
         self.assertEqual(result["path"], "/admin")
 
     def test_missing_header_verifier_confirms_expected_gaps(self):
-        with patch("urllib.request.urlopen", return_value=_Resp(status=200, headers={"X-Frame-Options": "DENY"})):
+        with patch.object(
+            pipeline,
+            "_request_headers",
+            return_value={
+                "status_code": 200,
+                "headers": {"X-Frame-Options": "DENY"},
+                "url": "https://example.com",
+            },
+        ):
             result = pipeline._test_missing_security_headers(  # type: ignore[attr-defined]
                 "https://example.com",
                 {"title": "Missing Security Headers", "description": "Missing headers: Content-Security-Policy, X-Frame-Options"},

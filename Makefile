@@ -10,10 +10,10 @@ demo-lab-down:
 	docker compose -f labs/docker-compose.yml down
 
 demo-run-researcher:
-	curl -fsS -X POST "$(ARES_API_URL)/assess" -H "X-ARES-Key: $(ARES_API_KEY)" -H "Content-Type: application/json" -d '{"target":"127.0.0.1","ip_ranges":["127.0.0.1/32"],"mode":"full","profile":"advanced","roe_policy_path":"labs/researcher_roe.yaml"}'
+	curl -fsS -X POST "$(ARES_API_URL)/assess" -H "X-ARES-Key: $(ARES_API_KEY)" -H "Content-Type: application/json" -d '{"target":"127.0.0.1","mode":"full","profile":"lab","policy_id":"researcher-lab"}'
 
 demo-run-government:
-	curl -fsS -X POST "$(ARES_API_URL)/assess" -H "X-ARES-Key: $(ARES_API_KEY)" -H "Content-Type: application/json" -d '{"target":"127.0.0.1","ip_ranges":["127.0.0.1/32"],"mode":"full","profile":"advanced","roe_policy_path":"labs/government_roe.yaml"}'
+	curl -fsS -X POST "$(ARES_API_URL)/assess" -H "X-ARES-Key: $(ARES_API_KEY)" -H "Content-Type: application/json" -d '{"target":"127.0.0.1","mode":"full","profile":"lab","policy_id":"government-lab"}'
 
 demo-report:
 	@ls -1t reports/ARES_Report_127_0_0_1_*.md 2>/dev/null | head -1

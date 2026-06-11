@@ -15,6 +15,8 @@ def _lab_roe():
             "name": "local-lab",
             "allowed_profiles": ["lab"],
             "allowed_methods": ["GET", "HEAD", "OPTIONS"],
+            "allowed_ips": ["127.0.0.1"],
+            "allowed_cidrs": ["127.0.0.1/32"],
             "lab_targets": ["127.0.0.1"],
         }
     })
@@ -34,12 +36,17 @@ def test_lab_simulation_blocked_for_public_domain():
 
 
 def test_lab_simulation_allowed_for_localhost_when_enabled():
-    validator = ScopeValidator(Scope(ip_ranges=["127.0.0.1/32"]))
+    roe = _lab_roe()
+    validator = ScopeValidator(
+        Scope(ip_ranges=["127.0.0.1/32"]),
+        roe=roe,
+        profile="lab",
+    )
     with patch("utils.roe.ENABLE_LAB_EXPLOIT_SIMULATION", True):
         decision = evaluate_capability_action(
             {"name": "lab_exploit_simulation", "target": "127.0.0.1"},
             "lab",
-            _lab_roe(),
+            roe,
             validator,
         )
     assert decision["allowed"] is True

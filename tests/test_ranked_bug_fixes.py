@@ -181,6 +181,24 @@ class TestPriorityOneFlowFixes(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(os.path.isabs(captured["output_dir"]))
         self.assertEqual(out["report_path"], os.path.join(td, "report.md"))
 
+    async def test_replay_export_failure_does_not_fail_completed_assessment(self):
+        p = pipeline.ARESPipeline(
+            target="example.com",
+            scope=Scope(domains=["example.com"]),
+            mode="full",
+            session={},
+            log_fn=lambda *args, **kwargs: None,
+            phase_fn=lambda *args, **kwargs: None,
+            emit_fn=lambda *args, **kwargs: None,
+        )
+        with (
+            patch.object(pipeline, "generate_report", return_value="/tmp/report.md"),
+            patch.object(pipeline, "write_replay", side_effect=OSError("read only")),
+        ):
+            out = p._finalize({}, {}, {})
+        self.assertEqual(out["report_path"], "/tmp/report.md")
+        self.assertEqual(out["redteam"]["replay_path"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

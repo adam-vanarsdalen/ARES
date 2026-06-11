@@ -8,7 +8,6 @@ ARES Tool Library — Network & OSINT (v3)
 
 import socket
 import subprocess
-import json
 import ipaddress
 import os
 import urllib.request
@@ -31,6 +30,7 @@ from utils.config import (
     VERSION_DISCLOSURE_TIMEOUT,
 )
 from utils.scope_validator import ScopeValidator
+from utils.http_safety import REDIRECT_CODES, safe_http_request
 
 
 # ── Tech fingerprint patterns ─────────────────────────────────────────────────
@@ -439,26 +439,24 @@ def _redact_preview(text: str, limit: int = EVIDENCE_PREVIEW_MAX_CHARS) -> str:
     return preview
 
 
-def _version_disclosure_request(url: str, timeout: int | float) -> tuple[int, str]:
-    ctx = _build_ssl_context()
-    req = urllib.request.Request(
+def _version_disclosure_request(
+    url: str,
+    timeout: int | float,
+    scope: ScopeValidator,
+) -> tuple[int, str, dict | None]:
+    response = safe_http_request(
         url,
+        scope,
+        timeout=timeout,
         headers={"User-Agent": HTTP_USER_AGENT, "Accept": HTTP_ACCEPT},
-        method="GET",
+        max_body_bytes=EVIDENCE_PREVIEW_MAX_CHARS * 4,
+        ssl_context=_build_ssl_context(),
     )
-    opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=ctx))
-    try:
-        with opener.open(req, timeout=timeout) as resp:
-            return int(getattr(resp, "status", 0) or 0), resp.read(EVIDENCE_PREVIEW_MAX_CHARS * 4).decode("utf-8", errors="ignore")
-    except urllib.error.HTTPError as exc:
-        body = ""
-        try:
-            body = exc.read(EVIDENCE_PREVIEW_MAX_CHARS * 4).decode("utf-8", errors="ignore")
-        except Exception:
-            pass
-        return int(getattr(exc, "code", 0) or 0), body
-    except Exception:
-        return 0, ""
+    return (
+        response.status,
+        response.body.decode("utf-8", errors="ignore"),
+        response.blocked_redirect,
+    )
 
 
 def _classify_version_path(path: str, status: int, body: str) -> tuple[bool, bool, str, str, str]:
@@ -522,8 +520,19 @@ def probe_version_disclosure(base_url: str, scope: ScopeValidator) -> dict:
 
     for path in VERSION_DISCLOSURE_PATHS:
         url = urllib.parse.urljoin(normalized_base + "/", path.lstrip("/"))
-        status, body = _version_disclosure_request(url, VERSION_DISCLOSURE_TIMEOUT)
+        response = _version_disclosure_request(url, VERSION_DISCLOSURE_TIMEOUT, scope)
+        if len(response) == 2:
+            status, body = response
+            blocked_redirect = None
+        else:
+            status, body, blocked_redirect = response
         exists, is_protected, risk, hint, reason = _classify_version_path(path, status, body)
+        if blocked_redirect:
+            exists = False
+            is_protected = False
+            risk = "info"
+            hint = ""
+            reason = "redirect blocked by scope policy"
         preview = _redact_preview(body)
         entry = {
             "url": url,
@@ -535,6 +544,7 @@ def probe_version_disclosure(base_url: str, scope: ScopeValidator) -> dict:
             "framework_hint": hint,
             "reason": reason,
             "evidence_preview": preview,
+            "blocked_redirect": blocked_redirect,
         }
         result["paths"].append(entry)
         if is_protected:
@@ -675,7 +685,11 @@ def port_scan(target: str, ports: str, scope: ScopeValidator) -> dict:
                     line += " " + " ".join(service_parts)
                 open_ports.append(line)
         except ET.ParseError:
-            open_ports = [l.strip() for l in r.stdout.split("\n") if "/tcp" in l and "open" in l]
+            open_ports = [
+                line.strip()
+                for line in r.stdout.split("\n")
+                if "/tcp" in line and "open" in line
+            ]
         tech_from_nmap = []
         for line in open_ports:
             tech_from_nmap.extend(_extract_tech(line))
@@ -689,34 +703,45 @@ def port_scan(target: str, ports: str, scope: ScopeValidator) -> dict:
         return {"target": target, "error": str(e)}
 
 
-def _do_request(url: str, timeout: int | float = 10, method: str = "GET"):
-    """Make one HTTP request, returns (headers_dict, body_str, status_int)."""
-    ctx = _build_ssl_context()
-    req = urllib.request.Request(url, headers={
-        "User-Agent": HTTP_USER_AGENT,
-        "Accept": HTTP_ACCEPT,
-        "Range": f"bytes=0-{HTTP_PROBE_MAX_BODY_BYTES - 1}" if method == "GET" else "bytes=0-0",
-    }, method=method)
-    try:
-        with urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPSHandler(context=ctx)).open(req, timeout=timeout) as resp:
-            body = ""
-            if method != "HEAD":
-                body = resp.read(HTTP_PROBE_MAX_BODY_BYTES).decode("utf-8", errors="ignore")
-            return dict(resp.headers), body, resp.status
-    except urllib.error.HTTPError as exc:
-        body = ""
-        if method != "HEAD":
-            try:
-                body = exc.read(HTTP_PROBE_MAX_BODY_BYTES).decode("utf-8", errors="ignore")
-            except Exception:
-                body = ""
-        return dict(exc.headers or {}), body, exc.code
+def _do_request(
+    url: str,
+    timeout: int | float = 10,
+    method: str = "GET",
+    scope: ScopeValidator | None = None,
+):
+    """Make one redirect-safe HTTP request."""
+
+    if scope is None:
+        raise ValueError("A scope validator is required for target HTTP requests")
+    result = safe_http_request(
+        url,
+        scope,
+        method=method,
+        timeout=timeout,
+        headers={
+            "User-Agent": HTTP_USER_AGENT,
+            "Accept": HTTP_ACCEPT,
+            "Range": f"bytes=0-{HTTP_PROBE_MAX_BODY_BYTES - 1}" if method == "GET" else "bytes=0-0",
+        },
+        max_body_bytes=HTTP_PROBE_MAX_BODY_BYTES,
+        ssl_context=_build_ssl_context(),
+    )
+    if result.error and not result.status:
+        raise RuntimeError(result.error)
+    return (
+        result.headers,
+        result.body.decode("utf-8", errors="ignore"),
+        result.status,
+        result.url,
+        result.redirects,
+        result.blocked_redirect,
+    )
 
 
 def _curl_headers(url: str, timeout: int | float) -> tuple[dict, int, str]:
     timeout_s = max(float(timeout), 1.0)
     cmd = [
-        "curl", "-k", "-sS", "-L", "-I",
+        "curl", "-k", "-sS", "-I",
         "--http1.1",
         "--max-time", str(timeout_s),
         "--connect-timeout", str(min(timeout_s, 3.0)),
@@ -749,7 +774,7 @@ def _curl_headers(url: str, timeout: int | float) -> tuple[dict, int, str]:
 def _curl_body(url: str, timeout: int | float) -> tuple[str, int, str]:
     timeout_s = max(float(timeout), 1.0)
     cmd = [
-        "curl", "-k", "-sS", "-L",
+        "curl", "-k", "-sS",
         "--http1.1",
         "--max-time", str(timeout_s),
         "--connect-timeout", str(min(timeout_s, 3.0)),
@@ -771,6 +796,44 @@ def _curl_body(url: str, timeout: int | float) -> tuple[str, int, str]:
     return payload[:m.start()], status, effective_url
 
 
+def _curl_follow_headers(
+    url: str,
+    timeout: int | float,
+    scope: ScopeValidator,
+    max_redirects: int = 5,
+) -> tuple[dict, int, str, list[dict], dict | None]:
+    current = url
+    redirects = []
+    while True:
+        scope.validate_network_target(current)
+        headers, status, _ = _curl_headers(current, timeout)
+        if status not in REDIRECT_CODES:
+            return headers, status, current, redirects, None
+        location = headers.get("Location") or headers.get("location")
+        if not location:
+            return headers, status, current, redirects, None
+        destination = urllib.parse.urljoin(current, location)
+        try:
+            scope.validate_network_target(destination)
+        except ValueError as exc:
+            return headers, status, current, redirects, {
+                "source_url": current,
+                "location": location,
+                "destination_url": destination,
+                "status_code": status,
+                "reason": str(exc),
+                "body_fetched": False,
+            }
+        redirects.append({
+            "source_url": current,
+            "destination_url": destination,
+            "status_code": status,
+        })
+        if len(redirects) > max_redirects:
+            raise RuntimeError("curl redirect limit exceeded")
+        current = destination
+
+
 def http_probe(url: str, scope: ScopeValidator) -> dict:
     """
     Probe HTTP/HTTPS. Tries https first, falls back to http.
@@ -788,6 +851,8 @@ def http_probe(url: str, scope: ScopeValidator) -> dict:
     used_url = url
     used_method = ""
     used_transport = ""
+    redirects = []
+    blocked_redirect = None
     for try_url in candidate_urls:
         skip_remaining_urllib = False
         if time.monotonic() - started_at >= timeouts["total_budget"]:
@@ -810,19 +875,33 @@ def http_probe(url: str, scope: ScopeValidator) -> dict:
                 break
             try:
                 if transport == "urllib":
-                    headers, body, status = _do_request(try_url, timeout=timeout, method=method)
+                    response = _do_request(try_url, timeout=timeout, method=method, scope=scope)
+                    if len(response) == 3:
+                        headers, body, status = response
+                        used_url = try_url
+                        redirects = []
+                        blocked_redirect = None
+                    else:
+                        headers, body, status, used_url, redirects, blocked_redirect = response
                 elif method == "GET":
-                    headers, status, effective_url = _curl_headers(try_url, timeout=timeout)
-                    body, body_status, effective_body_url = _curl_body(try_url, timeout=timeout)
-                    status = status or body_status
-                    used_url = effective_body_url or effective_url or try_url
+                    headers, status, used_url, redirects, blocked_redirect = _curl_follow_headers(
+                        try_url,
+                        timeout,
+                        scope,
+                    )
+                    if blocked_redirect:
+                        body = ""
+                    else:
+                        body, body_status, _ = _curl_body(used_url, timeout=timeout)
+                        status = status or body_status
                 else:
-                    headers, status, effective_url = _curl_headers(try_url, timeout=timeout)
+                    headers, status, used_url, redirects, blocked_redirect = _curl_follow_headers(
+                        try_url,
+                        timeout,
+                        scope,
+                    )
                     body = ""
-                    used_url = effective_url or try_url
 
-                if transport == "urllib":
-                    used_url = try_url
                 used_method = method
                 used_transport = transport
                 if status or headers or body:
@@ -850,7 +929,9 @@ def http_probe(url: str, scope: ScopeValidator) -> dict:
 
     if not headers and not body:
         return {"url": url, "error": probe_error, "tech_signals": [], "tech_details": [],
-                "cpe_strings": [], "missing_security_headers": [], "security_headers": {}, "candidate_urls": candidate_urls}
+                "cpe_strings": [], "missing_security_headers": [], "security_headers": {},
+                "candidate_urls": candidate_urls, "redirects": redirects,
+                "blocked_redirect": blocked_redirect}
 
     try:
         all_tech = []
@@ -867,8 +948,10 @@ def http_probe(url: str, scope: ScopeValidator) -> dict:
         powered = headers.get("X-Powered-By", "")
         cookies = headers.get("Set-Cookie", "")
 
-        if server:  add_tech(_extract_tech(server))
-        if powered: add_tech(_extract_tech(powered))
+        if server:
+            add_tech(_extract_tech(server))
+        if powered:
+            add_tech(_extract_tech(powered))
 
         if "PHPSESSID" in cookies and "php" not in seen:
             all_tech.append({"name": "PHP (session cookie)", "version": "", "cpe": "php:php"})
@@ -899,6 +982,8 @@ def http_probe(url: str, scope: ScopeValidator) -> dict:
             "candidate_urls": candidate_urls,
             "probe_method": used_method,
             "probe_transport": used_transport,
+            "redirects": redirects,
+            "blocked_redirect": blocked_redirect,
             "timeout_profile": timeouts,
             "server_header": server,
             "powered_by_header": powered,

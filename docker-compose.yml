@@ -1,17 +1,16 @@
-version: "3.9"
-
 services:
   ares:
     build: .
     container_name: ares-server
     restart: unless-stopped
     ports:
-      - "8001:8001"
+      # Local development only. Put a TLS reverse proxy in front for production.
+      - "127.0.0.1:8001:8001"
     environment:
       - ARES_API_KEY=${ARES_API_KEY:?ARES_API_KEY must be set}
       - ARES_ENV=prod
       - ARES_OLLAMA_MODEL=${ARES_OLLAMA_MODEL:-qwen3.5:9b}
-      - ARES_OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - ARES_OLLAMA_BASE_URL=http://ollama:11434
       - ARES_DB_PATH=/data/ares.db
       - ARES_SAFE_TARGETS=${ARES_SAFE_TARGETS:-}
     volumes:
@@ -23,11 +22,13 @@ services:
       - ares-net
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.30.7
     container_name: ares-ollama
     restart: unless-stopped
-    ports:
-      - "11434:11434"
+    # Internal-only by default. For deliberate local debugging, add a separate
+    # override that binds 127.0.0.1:11434:11434. Never expose Ollama publicly.
+    expose:
+      - "11434"
     volumes:
       - ollama-models:/root/.ollama
     networks:

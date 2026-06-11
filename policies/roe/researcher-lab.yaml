@@ -1,0 +1,18 @@
+engagement:
+  name: ARES Researcher Local Demo
+  allowed_ips:
+    - 127.0.0.1
+  allowed_cidrs:
+    - 127.0.0.0/8
+  allowed_methods:
+    - GET
+    - HEAD
+    - OPTIONS
+    - TRACE
+  risky_methods_allowed: []
+  explicitly_allowed_risky_paths: []
+  allowed_profiles:
+    - lab
+  advanced_verification: true
+  lab_targets:
+    - 127.0.0.1

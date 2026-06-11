@@ -10,10 +10,10 @@ Usage:
 """
 
 import asyncio
-import ipaddress
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -29,20 +29,29 @@ from sse_starlette.sse import EventSourceResponse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from utils.scope_validator import Scope, ScopeValidator
+from utils.scope_validator import (
+    Scope,
+    ScopeValidator,
+    normalize_target_url,
+    scope_from_target_and_roe,
+    validate_target_or_raise,
+)
 from utils.capability_profiles import resolve_profile
+from utils.roe import evaluate_capability_action, load_roe_policy
 from pipeline import ARESPipeline
 from ollama_compat import check_ollama
 from utils.auth import APIKeyMiddleware
-from utils.rate_limit import check_and_record_new_session
+from utils.rate_limit import reserve_new_session
 from utils.config import (
     ALLOWED_ORIGINS,
     API_KEY,
     ENV,
     EVENT_QUEUE_SIZE,
+    ENABLE_ADVANCED_VERIFICATION,
     ENABLE_MANUAL_SECRET_VERIFY,
     OLLAMA_MODEL,
     PROFILE,
+    ROE_POLICY_ID,
     SECRET_VERIFY_REQUIRE_ADVANCED_PROFILE,
     PRUNE_INTERVAL,
     SESSION_TTL,
@@ -125,7 +134,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["Content-Type", "X-ARES-Key"],
 )
 
@@ -146,10 +155,6 @@ app.add_middleware(APIKeyMiddleware, api_key=_api_key)
 init_db()
 
 # ── Cached Ollama status ──────────────────────────────────────────────────────
-# /health returns instantly from cache — never blocks during inference
-import time as _time
-import threading as _threading
-
 _ollama_cache = {"status": {"running": True, "models": []}, "ts": 0}
 
 
@@ -157,16 +162,16 @@ def _refresh_ollama_cache():
     """Refresh in background thread — never blocks health check."""
     try:
         _ollama_cache["status"] = check_ollama()
-        _ollama_cache["ts"] = _time.time()
+        _ollama_cache["ts"] = time.time()
     except Exception:
         pass
 
 
 def get_ollama_status() -> dict:
-    now = _time.time()
+    now = time.time()
     if now - _ollama_cache["ts"] > 30:
         _ollama_cache["ts"] = now  # prevent concurrent refreshes
-        _threading.Thread(target=_refresh_ollama_cache, daemon=True).start()
+        threading.Thread(target=_refresh_ollama_cache, daemon=True).start()
     return _ollama_cache["status"]
 
 
@@ -177,7 +182,7 @@ class AssessmentRequest(BaseModel):
     ip_ranges: Annotated[list[str], Field(default_factory=list, max_length=20)]
     mode: str = "full"  # full | osint_only | recon_only
     profile: str | None = None
-    roe_policy_path: str | None = Field(default=None, max_length=1024)
+    policy_id: str | None = Field(default=None, max_length=128)
 
 
 class AssessmentSession(BaseModel):
@@ -190,7 +195,9 @@ class AssessmentSession(BaseModel):
 class ManualSecretVerifyRequest(BaseModel):
     type: str = "API Key"
     provider: str = "generic"
-    profile: str = "advanced"
+    profile: str | None = None
+    policy_id: str | None = Field(default=None, max_length=128)
+    operator_confirmation: bool = False
     secret_value: Annotated[SecretStr, Field(min_length=1, max_length=4096)]
     perform_metadata_check: bool = False
     secret_access_key: SecretStr | None = None
@@ -208,12 +215,10 @@ class FindingReviewRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def normalize_target(value: str) -> str:
-    raw = value.strip()
-    if not raw:
+    try:
+        return (urlsplit(normalize_target_url(value)).hostname or "").lower().rstrip(".")
+    except ValueError:
         return ""
-    parsed = urlsplit(raw if "://" in raw else f"//{raw}")
-    host = parsed.hostname or raw
-    return host.strip().lower().rstrip(".")
 
 
 def format_sse_event(event_type: str, data: dict) -> dict:
@@ -295,21 +300,30 @@ async def health():
 
 @app.post("/assess", response_model=AssessmentSession)
 async def start_assessment(req: AssessmentRequest):
-    await check_and_record_new_session(_active_sessions())
-
     ollama_status = get_ollama_status()
     if not ollama_status["running"]:
         raise HTTPException(400, "Ollama is not running. Start with: ollama serve")
 
-    target = normalize_target(req.target)
-    domains = [normalize_target(domain) for domain in req.domains if normalize_target(domain)]
-    ip_ranges = [ip_range.strip() for ip_range in req.ip_ranges if ip_range.strip()]
+    if req.domains or req.ip_ranges:
+        raise HTTPException(
+            400,
+            "Client-provided scope is not accepted. Select a server-managed RoE policy ID.",
+        )
+    try:
+        target_url = normalize_target_url(req.target)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    target = urlsplit(target_url).hostname or ""
     mode = req.mode.strip().lower()
     try:
         profile = resolve_profile(req.profile or PROFILE, legacy_mode=mode).value
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    roe_policy_path = (req.roe_policy_path or "").strip()
+    policy_id = (req.policy_id or ROE_POLICY_ID or "").strip()
+    try:
+        roe = load_roe_policy(policy_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     if not target:
         raise HTTPException(400, "Target is required")
@@ -317,42 +331,34 @@ async def start_assessment(req: AssessmentRequest):
         raise HTTPException(400, f"Invalid mode. Expected one of: {', '.join(sorted(VALID_MODES))}")
 
     try:
-        ipaddress.ip_address(target)
-        if not ip_ranges:
-            ip_ranges = [f"{target}/32"]
-    except ValueError:
-        pass
+        scope = scope_from_target_and_roe(target_url, roe)
+        validate_target_or_raise(target_url, roe=roe, profile=profile, scope=scope)
+    except ValueError as exc:
+        raise HTTPException(400, f"Target blocked: {exc}") from exc
 
-    scope_domains = domains if domains else [target, f"*.{target}"]
-    scope = Scope(domains=scope_domains, ip_ranges=ip_ranges)
+    async with reserve_new_session(_active_sessions):
+        session_id = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc).isoformat()
+        create_session(session_id, target, mode, created_at)
+        event_queues[session_id] = asyncio.Queue(maxsize=_QUEUE_SIZE)
 
-    validator = ScopeValidator(scope)
-    valid, reason = validator.validate(target)
-    if not valid:
-        raise HTTPException(400, f"Target out of scope: {reason}")
-
-    session_id = str(uuid.uuid4())
-    created_at = datetime.now(timezone.utc).isoformat()
-    create_session(session_id, target, mode, created_at)
-    event_queues[session_id] = asyncio.Queue(maxsize=_QUEUE_SIZE)
-
-    task = asyncio.create_task(
-        run_pipeline_background(
-            session_id=session_id,
-            target=target,
-            scope=scope,
-            mode=mode,
-            profile=profile,
-            roe_policy_path=roe_policy_path,
+        task = asyncio.create_task(
+            run_pipeline_background(
+                session_id=session_id,
+                target=target,
+                scope=scope,
+                mode=mode,
+                profile=profile,
+                policy_id=policy_id,
+            )
         )
-    )
-    _pipeline_tasks[session_id] = task
+        _pipeline_tasks[session_id] = task
 
     def _on_done(t: asyncio.Task, sid=session_id):
         _pipeline_tasks.pop(sid, None)
         if t.cancelled():
             update_session(sid, status="stopped", completed_at=time.time())
-        elif t.exception():
+        elif t.exception() and (get_session(sid) or {}).get("status") == "running":
             update_session(sid, status="error", completed_at=time.time())
 
     task.add_done_callback(_on_done)
@@ -525,10 +531,18 @@ async def get_report(session_id: str, format: str = ""):
 
 @app.post("/assess/{session_id}/stop")
 async def stop_assessment(session_id: str):
-    if get_session(session_id) is None:
+    session = get_session(session_id)
+    if session is None:
         raise HTTPException(404, "Session not found")
     update_session(session_id, abort=True, status="stopped", completed_at=time.time())
-    push_event(session_id, "stopped", {"message": "Assessment aborted by operator"})
+    task = _pipeline_tasks.get(session_id)
+    if task and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    push_event(session_id, "stopped", {
+        "message": "Assessment cancelled by operator",
+        "partial_evidence_preserved": True,
+    })
     return {"status": "stopped", "session_id": session_id}
 
 
@@ -536,9 +550,26 @@ async def stop_assessment(session_id: str):
 async def manual_verify_secret(req: ManualSecretVerifyRequest):
     if not ENABLE_MANUAL_SECRET_VERIFY:
         raise HTTPException(404, "Manual secret verification is disabled")
-    profile = resolve_profile(req.profile)
-    if SECRET_VERIFY_REQUIRE_ADVANCED_PROFILE and profile.value not in {"advanced", "custom"}:
-        raise HTTPException(403, "Manual secret verification requires advanced or custom profile")
+    if not ENABLE_ADVANCED_VERIFICATION:
+        raise HTTPException(403, "Advanced verification is disabled by server configuration")
+    effective_profile = resolve_profile(PROFILE)
+    if SECRET_VERIFY_REQUIRE_ADVANCED_PROFILE and effective_profile.value not in {"advanced", "custom"}:
+        raise HTTPException(403, "Server capability profile does not permit secret verification")
+    if not req.operator_confirmation:
+        raise HTTPException(403, "Explicit operator confirmation is required")
+    policy_id = (req.policy_id or ROE_POLICY_ID or "").strip()
+    try:
+        roe = load_roe_policy(policy_id)
+    except ValueError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    decision = evaluate_capability_action(
+        {"name": "secret_verification", "method": "GET"},
+        effective_profile,
+        roe,
+        ScopeValidator(Scope(), roe=roe, profile=effective_profile.value),
+    )
+    if not decision["allowed"]:
+        raise HTTPException(403, decision["reason"])
     try:
         result = verify_operator_secret(
             req.provider,
@@ -590,7 +621,7 @@ async def run_pipeline_background(
     scope: Scope,
     mode: str,
     profile: str | None = None,
-    roe_policy_path: str = "",
+    policy_id: str = "",
 ):
     session = SessionState(session_id)
 
@@ -612,7 +643,7 @@ async def run_pipeline_background(
             scope=scope,
             mode=mode,
             profile=profile,
-            roe_policy_path=roe_policy_path,
+            policy_id=policy_id,
             session=session,
             log_fn=log,
             phase_fn=phase_update,
@@ -638,6 +669,9 @@ async def run_pipeline_background(
         else:
             update_session(session_id, completed_at=time.time())
 
+    except asyncio.CancelledError:
+        update_session(session_id, status="stopped", completed_at=time.time())
+        raise
     except Exception as e:
         update_session(session_id, status="error", completed_at=time.time())
         log("WARN", f"Pipeline error: {str(e)}", "red")

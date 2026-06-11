@@ -61,9 +61,13 @@ class TestJSIntelligenceToolFixes(unittest.TestCase):
             "http://b.example/js/app.js": resp,
         })
 
-        with mock.patch("urllib.request.build_opener", return_value=opener):
+        scope = ScopeValidator(Scope(domains=["*.example"]), enforce_resolution=True)
+        with (
+            mock.patch("urllib.request.build_opener", return_value=opener),
+            mock.patch("utils.scope_validator.resolve_target_ips", return_value=["93.184.216.34"]),
+        ):
             with self.assertLogs("tools.js_intelligence", level="WARNING"):
-                out = js._fetch("http://a.example/js/app.js", timeout=1)
+                out = js._fetch("http://a.example/js/app.js", timeout=1, scope=scope)
 
         self.assertEqual(len(out), js._MAX_FETCH_BYTES)
 
@@ -72,11 +76,45 @@ class TestJSIntelligenceToolFixes(unittest.TestCase):
         err_a = urllib.error.HTTPError("http://a/", 302, "Found", {"Location": "http://b/"}, None)
         err_b = urllib.error.HTTPError("http://b/", 302, "Found", {"Location": "http://c/"}, None)
         opener = _FakeOpener({"http://a/": err_a, "http://b/": err_b})
-        with mock.patch("urllib.request.build_opener", return_value=opener):
-            with mock.patch("tools.js_intelligence._MAX_REDIRECTS", 1):
-                with self.assertLogs("tools.js_intelligence", level="WARNING"):
-                    out = js._fetch("http://a/", timeout=1)
+        scope = ScopeValidator(Scope(domains=["a", "b", "c"]), enforce_resolution=True)
+        with (
+            mock.patch("urllib.request.build_opener", return_value=opener),
+            mock.patch("utils.scope_validator.resolve_target_ips", return_value=["93.184.216.34"]),
+            mock.patch("tools.js_intelligence._MAX_REDIRECTS", 1),
+        ):
+            with self.assertLogs("tools.js_intelligence", level="WARNING"):
+                out = js._fetch("http://a/", timeout=1, scope=scope)
         self.assertEqual(out, "")
+
+    def test_d1_redirect_to_private_address_is_blocked_before_fetch(self):
+        error = urllib.error.HTTPError(
+            "https://example.com/app.js",
+            302,
+            "Found",
+            {"Location": "http://127.0.0.1/private.js"},
+            None,
+        )
+        opener = _FakeOpener({"https://example.com/app.js": error})
+        scope = ScopeValidator(Scope(domains=["example.com"]), enforce_resolution=True)
+
+        def resolve(value):
+            return ["127.0.0.1"] if "127.0.0.1" in value else ["93.184.216.34"]
+
+        blocked = []
+        with (
+            mock.patch("urllib.request.build_opener", return_value=opener),
+            mock.patch("utils.scope_validator.resolve_target_ips", side_effect=resolve),
+            self.assertLogs("tools.js_intelligence", level="WARNING"),
+        ):
+            out = js._fetch(
+                "https://example.com/app.js",
+                timeout=1,
+                scope=scope,
+                blocked_redirects=blocked,
+            )
+        self.assertEqual(out, "")
+        self.assertEqual(len(blocked), 1)
+        self.assertFalse(blocked[0]["body_fetched"])
 
     def test_d2_secret_dedupe_keeps_same_preview_from_different_scripts(self):
         scope = Scope(domains=["example.com", "*.example.com"])
@@ -86,7 +124,7 @@ class TestJSIntelligenceToolFixes(unittest.TestCase):
         js_a = 'const apiKey="ABCDEFGHIJKLMNOPQRSTUVWX1234567890";'
         js_b = 'const apiKey="ABCDEFGHIJKLMNOPQRSTUVWX1234567890";'
 
-        def fake_fetch(url, timeout=10):
+        def fake_fetch(url, timeout=10, **kwargs):
             if url == "https://example.com":
                 return html
             if url.endswith("/a.js"):
@@ -109,7 +147,7 @@ class TestJSIntelligenceToolFixes(unittest.TestCase):
         html = '<script src="https://cdn.other.net/app.js"></script>'
         js_body = 'fetch("/api/v1/users");'
 
-        def fake_fetch(url, timeout=10):
+        def fake_fetch(url, timeout=10, **kwargs):
             if url == "https://example.com":
                 return html
             if url == "https://cdn.other.net/app.js":
@@ -130,7 +168,7 @@ class TestJSIntelligenceToolFixes(unittest.TestCase):
         html = '<link rel="modulepreload" href="/assets/app.js">'
         js_body = 'fetch("/api/v1/users");'
 
-        def fake_fetch(url, timeout=10):
+        def fake_fetch(url, timeout=10, **kwargs):
             if url == "https://testphp.vulnweb.com/index.php":
                 return html
             if url == "https://testphp.vulnweb.com/assets/app.js":
@@ -166,7 +204,7 @@ class TestJSIntelligenceToolFixes(unittest.TestCase):
         </html>
         """
 
-        def fake_fetch(url, timeout=10):
+        def fake_fetch(url, timeout=10, **kwargs):
             if url == "https://demo.testfire.net":
                 return html
             return ""
@@ -194,7 +232,7 @@ class TestJSIntelligenceToolFixes(unittest.TestCase):
         products_html = '<script src="/static/app.js"></script>'
         js_body = 'fetch("/api/v1/catalog");'
 
-        def fake_fetch(url, timeout=10):
+        def fake_fetch(url, timeout=10, **kwargs):
             if url == "https://example.com":
                 return index_html
             if url == "https://example.com/products.asp":

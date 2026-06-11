@@ -1,5 +1,6 @@
 import unittest
 
+from utils.roe import parse_roe_policy
 from utils.scope_validator import Scope, ScopeValidator
 
 
@@ -27,12 +28,18 @@ class TestScopeValidator(unittest.TestCase):
         v = ScopeValidator(scope)
         ok, _ = v.validate("192.0.2.10")
         bad, _ = v.validate("198.51.100.1")
-        self.assertTrue(ok)
+        self.assertFalse(ok)
         self.assertFalse(bad)
 
     def test_ip_url_scope_with_port(self):
+        roe = parse_roe_policy({"engagement": {
+            "allowed_ips": ["127.0.0.1"],
+            "allowed_cidrs": ["127.0.0.1/32"],
+            "allowed_profiles": ["lab"],
+            "lab_targets": ["127.0.0.1"],
+        }})
         scope = Scope(domains=[], ip_ranges=["127.0.0.1/32"])
-        v = ScopeValidator(scope)
+        v = ScopeValidator(scope, roe=roe, profile="lab")
         self.assertTrue(v.is_url_in_scope("http://127.0.0.1:3000"))
         ok, _ = v.validate("http://127.0.0.1:3000")
         self.assertTrue(ok)

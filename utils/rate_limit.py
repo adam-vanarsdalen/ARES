@@ -8,6 +8,8 @@ Provides:
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
+from collections.abc import Callable
 
 from fastapi import HTTPException
 from utils.config import MAX_CONCURRENT, MAX_PER_MINUTE
@@ -17,22 +19,34 @@ _MAX_PER_MINUTE = MAX_PER_MINUTE
 
 _recent_starts: list[float] = []
 _lock = asyncio.Lock()
+_pending_sessions = 0
 
 
-async def check_and_record_new_session(active_sessions: dict) -> None:
+def _running_count(active_sessions: dict | Callable[[], dict]) -> int:
+    sessions = active_sessions() if callable(active_sessions) else active_sessions
+    return sum(
+        1 for session in sessions.values()
+        if session.get("status") == "running"
+    )
+
+
+@asynccontextmanager
+async def reserve_new_session(active_sessions: dict | Callable[[], dict]):
     """
-    Call before creating a session. Raises HTTP 429 if limits are exceeded.
-    Mutates _recent_starts to record the current request timestamp.
+    Atomically reserve one session slot until the caller persists the session.
+
+    The active-session provider is evaluated while holding the lock, and pending
+    reservations count toward the cap so concurrent requests cannot use the
+    same stale snapshot.
     """
+    global _pending_sessions
     async with _lock:
-        running = sum(
-            1 for session in active_sessions.values()
-            if session.get("status") == "running"
-        )
-        if running >= _MAX_CONCURRENT:
+        running = _running_count(active_sessions)
+        effective_running = running + _pending_sessions
+        if effective_running >= _MAX_CONCURRENT:
             raise HTTPException(
                 429,
-                f"Too many concurrent scans ({running}/{_MAX_CONCURRENT}). "
+                f"Too many concurrent scans ({effective_running}/{_MAX_CONCURRENT}). "
                 "Wait for an active session to complete.",
             )
 
@@ -45,3 +59,16 @@ async def check_and_record_new_session(active_sessions: dict) -> None:
                 f"Rate limit: max {_MAX_PER_MINUTE} new scans per minute. Retry shortly.",
             )
         _recent_starts.append(now)
+        _pending_sessions += 1
+    try:
+        yield
+    finally:
+        async with _lock:
+            _pending_sessions = max(0, _pending_sessions - 1)
+
+
+async def check_and_record_new_session(active_sessions: dict | Callable[[], dict]) -> None:
+    """Compatibility helper for callers that complete reservation immediately."""
+
+    async with reserve_new_session(active_sessions):
+        return None
