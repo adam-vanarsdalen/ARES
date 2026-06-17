@@ -42,7 +42,7 @@ API_KEY = _str("ARES_API_KEY")
 ENV = _str("ARES_ENV", "prod")
 ALLOWED_ORIGINS = _list(
     "ARES_ALLOWED_ORIGINS",
-    "null,http://localhost:8001,http://127.0.0.1:8001,"
+    "http://localhost:8001,http://127.0.0.1:8001,"
     "http://localhost:5173,http://localhost:3000,"
     "http://127.0.0.1:5173,http://127.0.0.1:3000",
 )
@@ -148,7 +148,6 @@ def as_dict() -> dict:
         "passive_url_timeout_s": PASSIVE_URL_TIMEOUT,
         "passive_url_max": PASSIVE_URL_MAX,
         "sitemap_max_children": SITEMAP_MAX_CHILDREN,
-        "subdomain_wordlist_path": SUBDOMAIN_WORDLIST_PATH,
         "subdomain_wordlist_max": SUBDOMAIN_WORDLIST_MAX,
         "version_disclosure_timeout_s": VERSION_DISCLOSURE_TIMEOUT,
         "evidence_preview_max_chars": EVIDENCE_PREVIEW_MAX_CHARS,
@@ -174,7 +173,6 @@ def as_dict() -> dict:
         "require_roe_for_advanced": REQUIRE_ROE_FOR_ADVANCED,
         "enable_lab_exploit_simulation": ENABLE_LAB_EXPLOIT_SIMULATION,
         "require_local_target_for_lab_exploit_sim": REQUIRE_LOCAL_TARGET_FOR_LAB_EXPLOIT_SIM,
-        "lab_manifest_path": LAB_MANIFEST_PATH,
         "nuclei_profile": NUCLEI_PROFILE,
         "enable_nuclei": ENABLE_NUCLEI,
         "nuclei_max_templates": NUCLEI_MAX_TEMPLATES,
@@ -185,6 +183,5 @@ def as_dict() -> dict:
         "enable_otel": ENABLE_OTEL,
         "otel_endpoint_configured": bool(OTEL_EXPORTER_OTLP_ENDPOINT),
         "roe_policy_configured": bool(ROE_POLICY_ID),
-        "roe_policy_dir": ROE_POLICY_DIR,
         "event_queue_size": EVENT_QUEUE_SIZE,
     }

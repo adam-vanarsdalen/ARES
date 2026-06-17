@@ -83,14 +83,22 @@ def get_session(session_id: str) -> dict | None:
     return _row_to_session(row)
 
 
+_ALLOWED_SESSION_COLS = frozenset(
+    {"status", "completed_at", "results_json", "report_path", "abort"}
+)
+
+
 def update_session(session_id: str, **kwargs):
-    """Update arbitrary columns. results dict is serialised automatically."""
+    """Update session columns. results dict is serialised automatically."""
     if "results" in kwargs:
         kwargs["results_json"] = json.dumps(kwargs.pop("results"))
     if "abort" in kwargs:
         kwargs["abort"] = int(bool(kwargs["abort"]))
     if not kwargs:
         return
+    bad = set(kwargs) - _ALLOWED_SESSION_COLS
+    if bad:
+        raise ValueError(f"Disallowed session column(s): {bad}")
     cols = ", ".join(f"{k}=?" for k in kwargs)
     vals = list(kwargs.values()) + [session_id]
     with _lock:

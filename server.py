@@ -11,7 +11,9 @@ Usage:
 
 import asyncio
 import json
+import logging
 import os
+from pathlib import Path
 import sys
 import threading
 import time
@@ -151,6 +153,12 @@ if not _api_key:
             "and ARES_API_KEY=dev-insecure."
         )
     _api_key = "dev-insecure"
+
+if _env == "dev":
+    logging.warning(
+        "ARES is running in DEV mode with a well-known API key. "
+        "Do NOT expose this server on a public network interface."
+    )
 
 app.add_middleware(APIKeyMiddleware, api_key=_api_key)
 init_db()
@@ -299,11 +307,20 @@ async def health():
     }
 
 
+_SBOM_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
 @app.post("/sbom/analyze")
 async def analyze_sbom(request: Request):
     """Accept a CycloneDX JSON SBOM body and return correlated CVE findings."""
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > _SBOM_MAX_BYTES:
+        return JSONResponse(status_code=413, content={"error": "sbom_too_large"})
+    body = await request.body()
+    if len(body) > _SBOM_MAX_BYTES:
+        return JSONResponse(status_code=413, content={"error": "sbom_too_large"})
     try:
-        sbom_data = await request.json()
+        sbom_data = json.loads(body)
     except Exception:
         return JSONResponse(status_code=400, content={"error": "invalid_sbom_json"})
     return JSONResponse(ingest_sbom(sbom_data))
@@ -425,11 +442,12 @@ async def get_results(session_id: str):
     session = get_session(session_id)
     if session is None:
         raise HTTPException(404, "Session not found")
+    results = {k: v for k, v in session["results"].items() if k != "report_path"}
     return {
         "session_id": session_id,
         "target": session["target"],
         "status": session["status"],
-        "results": session["results"]
+        "results": results
     }
 
 
@@ -533,6 +551,12 @@ async def get_report(session_id: str, format: str = ""):
     report_path = session.get("report_path")
     if not report_path or not os.path.exists(report_path):
         raise HTTPException(404, "Report not yet generated")
+    _reports_dir = Path(__file__).resolve().parent / "reports"
+    try:
+        if not Path(report_path).resolve().is_relative_to(_reports_dir):
+            raise HTTPException(403, "Invalid report path")
+    except (TypeError, ValueError):
+        raise HTTPException(403, "Invalid report path")
     return FileResponse(
         report_path,
         media_type="text/markdown",
@@ -674,7 +698,7 @@ async def run_pipeline_background(
             emit("complete", {
                 "target": target,
                 "risk": results.get("redteam", {}).get("overall_risk", "UNKNOWN"),
-                "report_path": results.get("report_path", ""),
+                "report_ready": bool(results.get("report_path")),
                 "summary": results.get("osint", {}).get("summary", "")
             })
         else:

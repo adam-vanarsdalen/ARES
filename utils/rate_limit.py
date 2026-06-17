@@ -4,6 +4,10 @@ Simple in-process rate limiter for ARES.
 Provides:
   - Global concurrent session cap  (ARES_MAX_CONCURRENT_SESSIONS, default 5)
   - Per-minute new-session cap     (ARES_MAX_SESSIONS_PER_MINUTE, default 10)
+
+NOTE: State is per-process and does not survive restarts. For multi-instance
+deployments behind a load balancer, replace _recent_starts / _pending_sessions
+with a shared store (e.g., Redis or a DB counter) to enforce limits correctly.
 """
 
 import asyncio
